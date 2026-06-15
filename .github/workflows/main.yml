@@ -1,0 +1,111 @@
+name: Build and Test
+
+on:
+  push:
+    branches:
+      - dev
+      - stage
+      - main
+      - release**
+  pull_request:
+      types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    - cron: "0 1 * * *" # 02:00 UTC+1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-push-{1}-{2}', github.workflow, github.ref, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  job_go_checks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Run go mod tidy
+        run: |
+          go mod tidy
+          if [[ $(git status --porcelain) ]]; then
+            git diff
+            echo
+            echo "go mod tidy made these changes, please run 'go mod tidy' and include those changes in a commit"
+            exit 1
+          fi
+
+      - name: Run go fix
+        run: |
+          go fix ./...
+          if [[ $(git status --porcelain) ]]; then
+            git diff
+            echo
+            echo "go fix made these changes, please run 'go fix ./...' and include those changes in a commit"
+            exit 1
+          fi
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run go generate
+        run: |
+          go generate ./...
+          if [[ $(git status --porcelain) ]]; then
+            git diff
+            echo
+            echo "go generate made these changes, please run 'go generate ./...' and include those changes in a commit"
+            exit 1
+          fi
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.5
+
+      - name: Run deadcode
+        run: go run golang.org/x/tools/cmd/deadcode@v0.41.0 -test ./... | tee deadcode.out
+
+  job_go_test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      LOG_LEVEL: debug
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Run unit tests
+        env:
+          RUN_INTEGRATION_TESTS: false
+        run: |
+          go test -v ./... \
+            -p 1 \
+            -failfast \
+            -vet=off
+
+  call-docker-build:
+    name: Docker
+    needs: [job_go_checks, job_go_test]
+    permissions:
+      contents: read
+      packages: write
+    if: github.event.pull_request.draft != true
+    uses: ./.github/workflows/docker-build.yml
+    secrets: inherit
+    with:
+      image-tag: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}
+      push: ${{ github.event_name == 'push' }}

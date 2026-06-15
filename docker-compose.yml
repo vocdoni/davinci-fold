@@ -1,0 +1,65 @@
+# Docker Compose Profiles:
+# - prod: production orchestrator with auto-update (watchtower).
+# - dev:  development orchestrator.
+# - test: runs unit + integration tests (CPU only; GPU lives on the workers).
+
+x-common-env: &common-env
+  DAVINCIFOLD_DATADIR: /app/run
+  DAVINCIFOLD_LOG_LEVEL: ${DAVINCIFOLD_LOG_LEVEL:-info}
+
+x-fold-common: &fold-common
+  env_file: .env
+  environment: *common-env
+  volumes:
+    - run:/app/run
+  ports:
+    - "${DAVINCIFOLD_API_PORT:-8888}:${DAVINCIFOLD_API_PORT:-8888}"
+  restart: ${RESTART:-unless-stopped}
+  labels:
+    - "com.centurylinklabs.watchtower.enable=true"
+
+services:
+  davinci-fold:
+    profiles: ["prod", "dev"]
+    build:
+      context: ./
+    image: "ghcr.io/vocdoni/davinci-fold:${DAVINCI_FOLD_TAG:-main}"
+    <<: *fold-common
+
+  watchtower:
+    profiles: ["prod"]
+    image: nickfedor/watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 300 --label-enable --include-stopped --revive-stopped
+    restart: ${RESTART:-unless-stopped}
+    depends_on:
+      - davinci-fold
+
+  unit-test:
+    profiles: ["test"]
+    build:
+      context: ./
+      dockerfile: Dockerfile
+      target: builder
+    network_mode: "host"
+    environment:
+      <<: *common-env
+      RUN_INTEGRATION_TESTS: "false"
+    command: /bin/sh -c "go test -v $$(go list ./... | grep -v github.com/vocdoni/davinci-fold/tests) -timeout=30m"
+
+  integration-test:
+    profiles: ["test"]
+    build:
+      context: ./
+      dockerfile: Dockerfile
+      target: builder
+    network_mode: "host"
+    environment:
+      <<: *common-env
+      RUN_INTEGRATION_TESTS: "true"
+    command: go test -v ./tests/... -p 1 -timeout=1h
+
+volumes:
+  run:
+    driver: local

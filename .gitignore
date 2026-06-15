@@ -1,0 +1,24 @@
+# Binaries
+/davinci-fold
+/test-keywarden
+*.exe
+
+# Local data / runtime
+/run/
+.davinci-fold/
+*.db
+
+# Env
+.env
+.env.local
+
+# Coverage / build artifacts
+*.out
+deadcode.out
+/dist/
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
