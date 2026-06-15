@@ -13,7 +13,7 @@ require (
 	github.com/spf13/viper v1.21.0
 	github.com/vocdoni/davinci-node v0.0.2-0.20260302160544-e9393d9f6610
 	github.com/vocdoni/davinci-node/spec v0.0.0-20260302160544-e9393d9f6610
-	github.com/vocdoni/davinci-zkvm/go-sdk v0.0.0-00010101000000-000000000000
+	github.com/vocdoni/davinci-zkvm/go-sdk v0.0.0-20260615101614-662f2cf8d309
 )
 
 require (
@@ -143,5 +143,3 @@ require (
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
-
-replace github.com/vocdoni/davinci-zkvm/go-sdk => ../davinci-zkvm/go-sdk

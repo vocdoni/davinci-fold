@@ -346,6 +346,8 @@ github.com/vocdoni/davinci-node v0.0.2-0.20260302160544-e9393d9f6610 h1:AREfCoXg
 github.com/vocdoni/davinci-node v0.0.2-0.20260302160544-e9393d9f6610/go.mod h1:2k2xAD3mI3/5xmzeGdSNNPEx/drqJ2tG7Up1rP6tf4Q=
 github.com/vocdoni/davinci-node/spec v0.0.0-20260302160544-e9393d9f6610 h1:fFoIOwx5f8EwRLbrEeP5Fzy+NHTm6vce/gtYeYg//B4=
 github.com/vocdoni/davinci-node/spec v0.0.0-20260302160544-e9393d9f6610/go.mod h1:ofv03F4/zRUYw4lFgVs0ZNYJWEru/F7c2JurGNJYVLQ=
+github.com/vocdoni/davinci-zkvm/go-sdk v0.0.0-20260615101614-662f2cf8d309 h1:Ey4eW1arRYruuEOiIsa65aGWegz+U7T6sMZJCN6jKSM=
+github.com/vocdoni/davinci-zkvm/go-sdk v0.0.0-20260615101614-662f2cf8d309/go.mod h1:CXaw9qYjSTTbtZWrR/XilOLHFvK13tJ3ab7TUifRP8A=
 github.com/vocdoni/gnark-crypto-primitives v0.0.2-0.20260115102516-64ce9c3fd55d h1:g/v2DQK3u62nEspG3htAksWof4hGpiPECjwWyBnIkGM=
 github.com/vocdoni/gnark-crypto-primitives v0.0.2-0.20260115102516-64ce9c3fd55d/go.mod h1:vbpZOw6IYuRzO1gdpuW2+Ppnq/v9cscWGcdWiZ2rWi8=
 github.com/vocdoni/lean-imt-go v0.0.0-20260212110350-173da8db474b h1:9h+M1jce5DYHsom6HPLyYGx9wuk4qhhE7byw7RVGM9M=
