@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/vocdoni/davinci-node/log"
+	"github.com/vocdoni/davinci-fold/log"
 	davinci "github.com/vocdoni/davinci-zkvm/go-sdk"
 )
 

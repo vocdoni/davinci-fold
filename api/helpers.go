@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/vocdoni/davinci-node/log"
+	"github.com/vocdoni/davinci-fold/log"
 
 	"github.com/vocdoni/davinci-fold/types"
 )

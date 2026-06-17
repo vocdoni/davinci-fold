@@ -16,7 +16,7 @@ import (
 	"github.com/vocdoni/davinci-fold/internal"
 	"github.com/vocdoni/davinci-fold/orchestrator"
 	"github.com/vocdoni/davinci-fold/workers"
-	"github.com/vocdoni/davinci-node/log"
+	"github.com/vocdoni/davinci-fold/log"
 )
 
 const maxRequestBodyLog = 512 // Maximum request-body length to log.

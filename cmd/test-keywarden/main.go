@@ -19,7 +19,7 @@ import (
 
 	bjjgnark "github.com/vocdoni/davinci-node/crypto/ecc/bjj_gnark"
 	"github.com/vocdoni/davinci-node/crypto/elgamal"
-	"github.com/vocdoni/davinci-node/log"
+	"github.com/vocdoni/davinci-fold/log"
 
 	"github.com/vocdoni/davinci-fold/internal"
 	"github.com/vocdoni/davinci-fold/keywarden"

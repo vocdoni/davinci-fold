@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vocdoni/davinci-node/log"
+	"github.com/vocdoni/davinci-fold/log"
 
 	"github.com/vocdoni/davinci-fold/tests/helpers"
 )

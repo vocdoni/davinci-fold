@@ -9,11 +9,11 @@ require (
 	github.com/go-chi/chi/v5 v5.2.3
 	github.com/go-chi/cors v1.2.1
 	github.com/golang-jwt/jwt/v4 v4.5.2
+	github.com/rs/zerolog v1.34.0
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
 	github.com/vocdoni/davinci-node v0.0.2-0.20260302160544-e9393d9f6610
-	github.com/vocdoni/davinci-node/spec v0.0.0-20260302160544-e9393d9f6610
-	github.com/vocdoni/davinci-zkvm/go-sdk v0.0.0-20260615101614-662f2cf8d309
+	github.com/vocdoni/davinci-zkvm/go-sdk v0.0.0-20260617062548-0a39f4d67f61
 )
 
 require (
@@ -103,7 +103,6 @@ require (
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/ronanh/intcomp v1.1.1 // indirect
 	github.com/rs/cors v1.11.0 // indirect
-	github.com/rs/zerolog v1.34.0 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/sethvargo/go-retry v0.3.0 // indirect
@@ -118,6 +117,7 @@ require (
 	github.com/urfave/cli/v2 v2.27.5 // indirect
 	github.com/vocdoni/arbo v0.0.0-20260224125436-30808c99dfb2 // indirect
 	github.com/vocdoni/davinci-circom v0.1.0 // indirect
+	github.com/vocdoni/davinci-node/spec v0.0.0-20260302160544-e9393d9f6610 // indirect
 	github.com/vocdoni/gnark-crypto-primitives v0.0.2-0.20260115102516-64ce9c3fd55d // indirect
 	github.com/vocdoni/lean-imt-go v0.0.0-20260212110350-173da8db474b // indirect
 	github.com/vocdoni/poseidon377 v0.0.0-20260107010505-905fd2aadb69 // indirect

@@ -7,7 +7,7 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/vocdoni/davinci-node/crypto/elgamal"
-	"github.com/vocdoni/davinci-node/log"
+	"github.com/vocdoni/davinci-fold/log"
 
 	"github.com/vocdoni/davinci-fold/types"
 	davinci "github.com/vocdoni/davinci-zkvm/go-sdk"

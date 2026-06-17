@@ -1,7 +1,7 @@
 package orchestrator
 
 import (
-	"github.com/vocdoni/davinci-node/log"
+	"github.com/vocdoni/davinci-fold/log"
 
 	"github.com/vocdoni/davinci-fold/types"
 )

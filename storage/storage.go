@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/vocdoni/davinci-node/db"
-	"github.com/vocdoni/davinci-node/log"
+	"github.com/vocdoni/davinci-fold/log"
 )
 
 var (

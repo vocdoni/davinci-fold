@@ -6,7 +6,7 @@ import (
 
 	"github.com/vocdoni/davinci-node/db"
 	"github.com/vocdoni/davinci-node/db/prefixeddb"
-	"github.com/vocdoni/davinci-node/log"
+	"github.com/vocdoni/davinci-fold/log"
 )
 
 // reservationDB returns the write-capable reservation namespace for a prefix.

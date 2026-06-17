@@ -12,12 +12,17 @@ import (
 	"github.com/vocdoni/davinci-node/crypto/elgamal"
 	"github.com/vocdoni/davinci-node/db"
 	"github.com/vocdoni/davinci-node/db/metadb"
-	"github.com/vocdoni/davinci-node/spec/params"
 
 	"github.com/vocdoni/davinci-fold/storage"
 	"github.com/vocdoni/davinci-fold/types"
 	davinci "github.com/vocdoni/davinci-zkvm/go-sdk"
 )
+
+// fieldsPerBallot is the protocol constant for the number of field elements
+// per ballot (mirrors davinci-node spec/params.FieldsPerBallot). Inlined here
+// to avoid pulling the davinci-node/spec module, which davinci-fold doesn't
+// otherwise need.
+const fieldsPerBallot = 8
 
 const testCensusRoot = "0x1234"
 
@@ -50,7 +55,7 @@ func testElection(t *testing.T, id byte, endTime time.Time) (*types.Election, *b
 // makeSub builds a valid vote submission for voter i under encKey.
 func makeSub(t *testing.T, encKey *bjjgnark.BJJ, i int) *VoteSubmission {
 	t.Helper()
-	var msg [params.FieldsPerBallot]*big.Int
+	var msg [fieldsPerBallot]*big.Int
 	for j := range msg {
 		msg[j] = big.NewInt(int64(10*i + j))
 	}

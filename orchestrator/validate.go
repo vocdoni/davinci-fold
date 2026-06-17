@@ -7,7 +7,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/vocdoni/davinci-node/circuits/ballotproof"
-	"github.com/vocdoni/davinci-node/crypto"
+	"github.com/vocdoni/davinci-fold/crypto"
 	bjjgnark "github.com/vocdoni/davinci-node/crypto/ecc/bjj_gnark"
 	"github.com/vocdoni/davinci-node/crypto/elgamal"
 	"github.com/vocdoni/davinci-node/crypto/signatures/ethereum"
