@@ -1,3 +1,11 @@
+# Build UI assets
+FROM node:22-slim AS ui-builder
+WORKDIR /ui
+COPY ui/package.json ui/package-lock.json* ./
+RUN npm ci
+COPY ui/ .
+RUN npm run build
+
 # Build Go binary
 FROM golang:1.25 AS builder
 WORKDIR /src
@@ -10,6 +18,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download || true
 
 COPY . .
+# Overlay the freshly-built UI assets so go:embed picks them up.
+COPY --from=ui-builder /ui/dist ./internal/assets/dist
 
 ARG BUILDARGS
 RUN --mount=type=cache,target=/go/pkg/mod \
