@@ -19,7 +19,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 COPY . .
 # Overlay the freshly-built UI assets so go:embed picks them up.
-COPY --from=ui-builder /ui/dist ./internal/assets/dist
+COPY --from=ui-builder /internal/assets/dist ./internal/assets/dist
 
 ARG BUILDARGS
 RUN --mount=type=cache,target=/go/pkg/mod \
