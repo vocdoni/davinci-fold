@@ -8,25 +8,31 @@ import (
 	"time"
 
 	qt "github.com/frankban/quicktest"
-	bjjgnark "github.com/vocdoni/davinci-node/crypto/ecc/bjj_gnark"
-	"github.com/vocdoni/davinci-node/crypto/elgamal"
 	"github.com/vocdoni/davinci-node/db"
 	"github.com/vocdoni/davinci-node/db/metadb"
 
 	"github.com/vocdoni/davinci-fold/storage"
 	"github.com/vocdoni/davinci-fold/types"
 	davinci "github.com/vocdoni/davinci-zkvm/go-sdk"
+	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/circuits/ballotproof"
+	bjjgnark "github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/crypto/ecc/bjj_gnark"
+	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/crypto/elgamal"
+	spectestutil "github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/spec/testutil"
 )
-
-// fieldsPerBallot is the protocol constant for the number of field elements
-// per ballot (mirrors davinci-node spec/params.FieldsPerBallot). Inlined here
-// to avoid pulling the davinci-node/spec module, which davinci-fold doesn't
-// otherwise need.
-const fieldsPerBallot = 8
 
 const testCensusRoot = "0x1234"
 
 func bigHex(bi *big.Int) string { return "0x" + hex.EncodeToString(bi.Bytes()) }
+
+// packedBallotMode returns the hex-packed fixture BallotMode; its low byte
+// declares NumFields, which the guest and host num_fields-aware accumulators
+// read from the state's config leaf.
+func packedBallotMode(t *testing.T) string {
+	t.Helper()
+	bm, err := spectestutil.FixedBallotMode().Pack()
+	qt.Assert(t, err, qt.IsNil)
+	return "0x" + bm.Text(16)
+}
 
 // testElection builds an election config bound to a fresh ElGamal key.
 func testElection(t *testing.T, id byte, endTime time.Time) (*types.Election, *bjjgnark.BJJ) {
@@ -42,12 +48,13 @@ func testElection(t *testing.T, id byte, endTime time.Time) (*types.Election, *b
 		EndTime:   endTime,
 		Config: types.ElectionConfig{
 			ProcessID:    "0xabcdef",
-			BallotMode:   "0x01",
+			BallotMode:   packedBallotMode(t),
 			EncX:         bigHex(rx),
 			EncY:         bigHex(ry),
 			CensusOrigin: 1,
 			CensusRoot:   testCensusRoot,
-			VK:           json.RawMessage(`{"protocol":"groth16"}`),
+			// Real VK: the BallotVKHash config leaf is derived from it at genesis.
+			VK: ballotproof.CircomVerificationKey,
 		},
 	}, encKey
 }
@@ -55,7 +62,7 @@ func testElection(t *testing.T, id byte, endTime time.Time) (*types.Election, *b
 // makeSub builds a valid vote submission for voter i under encKey.
 func makeSub(t *testing.T, encKey *bjjgnark.BJJ, i int) *VoteSubmission {
 	t.Helper()
-	var msg [fieldsPerBallot]*big.Int
+	var msg [davinci.NumFields]*big.Int
 	for j := range msg {
 		msg[j] = big.NewInt(int64(10*i + j))
 	}
@@ -215,11 +222,11 @@ func TestFinalizeLifecycleGating(t *testing.T) {
 	_, err = e.SubmitDecryptionKey("kw", el.ID, big.NewInt(7))
 	c.Assert(err, qt.Not(qt.IsNil))
 
-	// Once Decrypting, the 32-coord ciphertext (8 ElGamal ciphertexts) is served.
+	// Once Decrypting, the NumFields ElGamal ciphertexts (4 coords each) are served.
 	c.Assert(s.SetElectionStatus(el.ID, types.StatusDecrypting), qt.IsNil)
 	ct, err := e.EncryptedResults(el.ID)
 	c.Assert(err, qt.IsNil)
-	c.Assert(len(ct), qt.Equals, 32)
+	c.Assert(len(ct), qt.Equals, davinci.NumFields*4)
 
 	// Without a scheduler the key cannot be finalized, and the status is left at
 	// Decrypting so a real keywarden could retry against a worker-backed engine.

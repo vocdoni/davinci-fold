@@ -9,6 +9,7 @@ import (
 	"github.com/vocdoni/davinci-fold/log"
 
 	"github.com/vocdoni/davinci-fold/tests/helpers"
+	"github.com/vocdoni/davinci-zkvm/go-sdk/tests/integration"
 )
 
 // services is the in-process davinci-fold stack shared by the integration
@@ -21,6 +22,10 @@ var (
 // TestMain boots the stack once for the whole package. It is gated by
 // RUN_INTEGRATION_TESTS so `go test ./...` stays fast and GPU-free by default.
 func TestMain(m *testing.M) {
+	// Ballot generation for >16 voters re-executes this test binary as a
+	// subprocess; intercept that mode before booting any services.
+	integration.RunBallotWorkerIfRequested()
+
 	if v := os.Getenv("RUN_INTEGRATION_TESTS"); v == "" || v == "false" {
 		log.Info("skipping davinci-fold integration tests (set RUN_INTEGRATION_TESTS=true)")
 		os.Exit(0)

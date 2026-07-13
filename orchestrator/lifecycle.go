@@ -41,9 +41,10 @@ func (e *Engine) drainAndPublish(rt *electionRuntime) {
 		"election", id.String(), "ciphertext", len(rt.state.EncryptedResults()))
 }
 
-// EncryptedResults returns the published results ciphertext (32 Twisted-Edwards
-// little-endian coords = 8 ElGamal ciphertexts), available once the election has
-// reached Decrypting. This is what the keywarden fetches before returning a key.
+// EncryptedResults returns the published results ciphertext (NumFields ElGamal
+// ciphertexts as 4 Twisted-Edwards little-endian coords each), available once
+// the election has reached Decrypting. This is what the keywarden fetches
+// before returning a key.
 func (e *Engine) EncryptedResults(id types.ElectionID) ([]string, error) {
 	el, err := e.store.Election(id)
 	if err != nil {

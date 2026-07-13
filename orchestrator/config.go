@@ -5,10 +5,10 @@ import (
 	"math/big"
 	"strings"
 
-	bjjgnark "github.com/vocdoni/davinci-node/crypto/ecc/bjj_gnark"
-
 	"github.com/vocdoni/davinci-fold/types"
+	davinci "github.com/vocdoni/davinci-zkvm/go-sdk"
 	"github.com/vocdoni/davinci-zkvm/go-sdk/chain"
+	bjjgnark "github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/crypto/ecc/bjj_gnark"
 )
 
 // parseHexBig parses a big-endian hex string (with or without 0x) into a
@@ -65,11 +65,16 @@ func chainConfigFromElection(cfg types.ElectionConfig) (chain.Config, error) {
 	if err != nil {
 		return chain.Config{}, err
 	}
+	vkHash, err := davinci.BallotVKLeaf(cfg.VK)
+	if err != nil {
+		return chain.Config{}, fmt.Errorf("ballot VK hash: %w", err)
+	}
 	return chain.Config{
 		ProcessID:    pid,
 		BallotMode:   bm,
 		EncKey:       key,
 		CensusOrigin: cfg.CensusOrigin,
 		CensusRoot:   cr,
+		BallotVKHash: vkHash,
 	}, nil
 }

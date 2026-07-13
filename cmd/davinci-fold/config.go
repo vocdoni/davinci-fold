@@ -10,6 +10,7 @@ import (
 	flag "github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	"github.com/vocdoni/davinci-fold/internal"
+	davinci "github.com/vocdoni/davinci-zkvm/go-sdk"
 )
 
 const (
@@ -130,8 +131,8 @@ func validateConfig(cfg *Config) error {
 	if cfg.Batch.Size < 2 {
 		return fmt.Errorf("batch size must be at least 2, got: %d", cfg.Batch.Size)
 	}
-	if cfg.Batch.Size > 256 {
-		return fmt.Errorf("batch size must not exceed 256 (circuit MAX_BATCH_SIZE), got: %d", cfg.Batch.Size)
+	if cfg.Batch.Size > davinci.MaxBatchSize {
+		return fmt.Errorf("batch size must not exceed %d (circuit MAX_BATCH_SIZE), got: %d", davinci.MaxBatchSize, cfg.Batch.Size)
 	}
 	if cfg.Fold.Every < 1 {
 		return fmt.Errorf("fold cadence must be at least 1, got: %d", cfg.Fold.Every)

@@ -9,7 +9,6 @@ import (
 
 	qt "github.com/frankban/quicktest"
 
-	"github.com/vocdoni/davinci-node/circuits/ballotproof"
 	"github.com/vocdoni/davinci-node/db"
 	"github.com/vocdoni/davinci-node/db/metadb"
 
@@ -17,6 +16,8 @@ import (
 	"github.com/vocdoni/davinci-fold/storage"
 	"github.com/vocdoni/davinci-fold/types"
 	"github.com/vocdoni/davinci-zkvm/go-sdk/tests/integration"
+	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/circuits/ballotproof"
+	spectestutil "github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/spec/testutil"
 )
 
 // TestAdversarialIngest drives real Groth16 ballots through a standalone,
@@ -59,6 +60,8 @@ func TestAdversarialIngest(t *testing.T) {
 	censusRoot, ok := election.Census.Root()
 	c.Assert(ok, qt.IsTrue)
 	encX, encY := election.EncKey.Point()
+	bm, err := spectestutil.FixedBallotMode().Pack()
+	c.Assert(err, qt.IsNil)
 
 	el := &types.Election{
 		ID:        types.ElectionID(election.ProcessID[:]),
@@ -67,7 +70,7 @@ func TestAdversarialIngest(t *testing.T) {
 		EndTime:   time.Now().Add(time.Hour),
 		Config: types.ElectionConfig{
 			ProcessID:    "0x" + hex.EncodeToString(election.ProcessID[:]),
-			BallotMode:   "0x01",
+			BallotMode:   "0x" + bm.Text(16),
 			EncX:         "0x" + encX.Text(16),
 			EncY:         "0x" + encY.Text(16),
 			CensusOrigin: uint64(election.CensusOrigin),

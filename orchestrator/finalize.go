@@ -123,7 +123,7 @@ func verifyFinalDigest(d *chain.Digest, snark *davinci.PlonkSnark, state *chain.
 		return err
 	}
 	for i, r := range results {
-		if d.Results[i] != r {
+		if uint64(d.Results[i]) != r {
 			return fmt.Errorf("digest result[%d] = %d, want %d", i, d.Results[i], r)
 		}
 	}

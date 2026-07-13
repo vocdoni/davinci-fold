@@ -6,14 +6,14 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/vocdoni/davinci-node/circuits/ballotproof"
 	"github.com/vocdoni/davinci-fold/crypto"
-	bjjgnark "github.com/vocdoni/davinci-node/crypto/ecc/bjj_gnark"
-	"github.com/vocdoni/davinci-node/crypto/elgamal"
-	"github.com/vocdoni/davinci-node/crypto/signatures/ethereum"
 	"github.com/vocdoni/davinci-node/util/circomgnark"
 	davinci "github.com/vocdoni/davinci-zkvm/go-sdk"
 	"github.com/vocdoni/davinci-zkvm/go-sdk/chain"
+	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/circuits/ballotproof"
+	bjjgnark "github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/crypto/ecc/bjj_gnark"
+	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/crypto/elgamal"
+	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/crypto/signatures/ethereum"
 )
 
 // VoteSubmission is the decoded, self-authenticating vote payload a voter

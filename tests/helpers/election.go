@@ -1,15 +1,17 @@
 package helpers
 
 import (
+	"encoding/json"
 	"math/big"
 	"os"
 	"strings"
 	"time"
 
-	bjjgnark "github.com/vocdoni/davinci-node/crypto/ecc/bjj_gnark"
-	"github.com/vocdoni/davinci-node/crypto/elgamal"
-
 	"github.com/vocdoni/davinci-fold/api"
+	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/circuits/ballotproof"
+	bjjgnark "github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/crypto/ecc/bjj_gnark"
+	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/crypto/elgamal"
+	spectestutil "github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/spec/testutil"
 )
 
 // NewElectionRequest builds a valid create-election body bound to a fresh
@@ -21,12 +23,17 @@ func NewElectionRequest(processID string, batchSize, foldEvery int, endTime time
 		return nil, nil, err
 	}
 	rx, ry := pub.(*bjjgnark.BJJ).Point()
+	bm, err := spectestutil.FixedBallotMode().Pack()
+	if err != nil {
+		return nil, nil, err
+	}
 	req := &api.ElectionCreateRequest{
 		ProcessID:  processID,
-		BallotMode: "0x01",
+		BallotMode: "0x" + bm.Text(16),
 		EncX:       "0x" + rx.Text(16),
 		EncY:       "0x" + ry.Text(16),
 		CensusRoot: "0x1234",
+		VK:         json.RawMessage(ballotproof.CircomVerificationKey),
 		BatchSize:  batchSize,
 		FoldEvery:  foldEvery,
 		EndTime:    endTime,

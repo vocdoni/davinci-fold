@@ -10,13 +10,15 @@ import (
 
 	qt "github.com/frankban/quicktest"
 	"github.com/golang-jwt/jwt/v4"
-	bjjgnark "github.com/vocdoni/davinci-node/crypto/ecc/bjj_gnark"
-	"github.com/vocdoni/davinci-node/crypto/elgamal"
 	"github.com/vocdoni/davinci-node/db"
 	"github.com/vocdoni/davinci-node/db/metadb"
 
 	"github.com/vocdoni/davinci-fold/orchestrator"
 	"github.com/vocdoni/davinci-fold/storage"
+	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/circuits/ballotproof"
+	bjjgnark "github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/crypto/ecc/bjj_gnark"
+	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/crypto/elgamal"
+	spectestutil "github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/spec/testutil"
 )
 
 const testJWTSecret = "test-secret"
@@ -110,12 +112,15 @@ func testElectionBody(t *testing.T, processID string) *ElectionCreateRequest {
 	pub, _, err := elgamal.GenerateKey(bjjgnark.New())
 	qt.Assert(t, err, qt.IsNil)
 	rx, ry := pub.(*bjjgnark.BJJ).Point()
+	bm, err := spectestutil.FixedBallotMode().Pack()
+	qt.Assert(t, err, qt.IsNil)
 	return &ElectionCreateRequest{
 		ProcessID:  processID,
-		BallotMode: "0x01",
+		BallotMode: "0x" + bm.Text(16),
 		EncX:       "0x" + rx.Text(16),
 		EncY:       "0x" + ry.Text(16),
 		CensusRoot: "0x1234",
+		VK:         json.RawMessage(ballotproof.CircomVerificationKey),
 		BatchSize:  2,
 		FoldEvery:  4,
 		EndTime:    time.Now().Add(time.Hour),

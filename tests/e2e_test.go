@@ -16,16 +16,16 @@ import (
 
 	qt "github.com/frankban/quicktest"
 
-	"github.com/vocdoni/davinci-node/circuits/ballotproof"
-	bjjgnark "github.com/vocdoni/davinci-node/crypto/ecc/bjj_gnark"
-	"github.com/vocdoni/davinci-node/crypto/elgamal"
-
 	"github.com/vocdoni/davinci-fold/api"
 	"github.com/vocdoni/davinci-fold/orchestrator"
 	"github.com/vocdoni/davinci-fold/tests/helpers"
 	davinci "github.com/vocdoni/davinci-zkvm/go-sdk"
 	davinciSolidity "github.com/vocdoni/davinci-zkvm/go-sdk/solidity"
 	"github.com/vocdoni/davinci-zkvm/go-sdk/tests/integration"
+	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/circuits/ballotproof"
+	bjjgnark "github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/crypto/ecc/bjj_gnark"
+	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/crypto/elgamal"
+	spectestutil "github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/spec/testutil"
 )
 
 // requireWorkers skips the calling test unless at least n prover workers were
@@ -99,9 +99,11 @@ func TestScatterGatherE2E(t *testing.T) {
 
 	// Create the election. ProcessID/EncKey/census root must match the locally
 	// built genesis so davinci-fold's State and the validator agree.
+	bm, err := spectestutil.FixedBallotMode().Pack()
+	c.Assert(err, qt.IsNil)
 	createReq := &api.ElectionCreateRequest{
 		ProcessID:    "0x" + hex.EncodeToString(election.ProcessID[:]),
-		BallotMode:   "0x01",
+		BallotMode:   "0x" + bm.Text(16),
 		EncX:         "0x" + encX.Text(16),
 		EncY:         "0x" + encY.Text(16),
 		CensusOrigin: uint64(election.CensusOrigin),
@@ -149,7 +151,7 @@ func TestScatterGatherE2E(t *testing.T) {
 	// The keywarden fetches the published ciphertext...
 	ctResp, code, err := services.Client.EncryptedResults(ctx, keywarden, el.ID)
 	c.Assert(err, qt.IsNil, qt.Commentf("encrypted-results status %d", code))
-	c.Assert(len(ctResp.Ciphertext), qt.Equals, 32)
+	c.Assert(len(ctResp.Ciphertext), qt.Equals, davinci.NumFields*4)
 
 	// ...and returns the v1 decryption key (the raw ElGamal private scalar),
 	// which triggers the GPU-bound finalize (final fold + PLONK). Widen the HTTP
@@ -157,13 +159,13 @@ func TestScatterGatherE2E(t *testing.T) {
 	services.Client.SetTimeout(25 * time.Minute)
 	results, err := services.Client.SubmitDecryptionKey(ctx, keywarden, el.ID, election.EncPrivKey)
 	c.Assert(err, qt.IsNil)
-	c.Assert(len(results.Tally), qt.Equals, 8)
+	c.Assert(len(results.Tally), qt.Equals, davinci.NumFields)
 	t.Logf("finalize complete; tally=%v", results.Tally)
 
 	// The committed tally must equal the analytic net tally (last ballot per
 	// voter wins). This is independent of davinci-fold's internal accumulator.
 	expTally := expectedChainTally(nBatches, batchSize, overwriteBatches)
-	for i := 0; i < 8; i++ {
+	for i := 0; i < davinci.NumFields; i++ {
 		c.Assert(results.Tally[i], qt.Equals, expTally[i],
 			qt.Commentf("tally field %d", i))
 	}
@@ -182,7 +184,7 @@ func TestScatterGatherE2E(t *testing.T) {
 // ciphertexts and serialized the same way the seal path deserializes it.
 func voteSubmission(v *integration.Voter, res *integration.BallotResult, census davinci.CensusProof) *orchestrator.VoteSubmission {
 	ballot := elgamal.NewBallot(bjjgnark.New())
-	for i := 0; i < 8; i++ {
+	for i := 0; i < davinci.NumFields; i++ {
 		ballot.Ciphertexts[i] = &elgamal.Ciphertext{
 			C1: bjjgnark.New().SetPoint(res.RawBallot.C1X[i], res.RawBallot.C1Y[i]),
 			C2: bjjgnark.New().SetPoint(res.RawBallot.C2X[i], res.RawBallot.C2Y[i]),
@@ -250,8 +252,8 @@ func solidityDir() string {
 // overwriteBatches batches re-vote earlier voters and only the last ballot per
 // voter counts. It mirrors BallotProofForTestDeterministic's field formula with
 // the seed scheme (seedBase = 42+100*b, voter i in a batch uses seedBase+i).
-func expectedChainTally(nBatches, batchSize, overwriteBatches int) [8]uint64 {
-	lastFields := make(map[int][8]int64)
+func expectedChainTally(nBatches, batchSize, overwriteBatches int) [davinci.NumFields]uint64 {
+	lastFields := make(map[int][davinci.NumFields]int64)
 	for b := 0; b < nBatches; b++ {
 		voterStart := b * batchSize
 		if overwriteBatches > 0 && b >= nBatches-overwriteBatches {
@@ -260,9 +262,9 @@ func expectedChainTally(nBatches, batchSize, overwriteBatches int) [8]uint64 {
 		seedBase := int64(42 + 100*b)
 		for i := 0; i < batchSize; i++ {
 			seed := seedBase + int64(i)
-			var fields [8]int64
+			var fields [davinci.NumFields]int64
 			stored := map[int64]bool{}
-			for f := int64(0); f < 6; f++ {
+			for f := int64(0); f < spectestutil.BallotNumFields; f++ {
 				for attempt := int64(0); ; attempt++ {
 					val := (seed + f*1000 + attempt) % 16
 					if !stored[val] {
@@ -275,9 +277,9 @@ func expectedChainTally(nBatches, batchSize, overwriteBatches int) [8]uint64 {
 			lastFields[voterStart+i] = fields
 		}
 	}
-	var totals [8]uint64
+	var totals [davinci.NumFields]uint64
 	for _, fields := range lastFields {
-		for f := 0; f < 8; f++ {
+		for f := 0; f < davinci.NumFields; f++ {
 			totals[f] += uint64(fields[f])
 		}
 	}
