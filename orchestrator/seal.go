@@ -22,8 +22,8 @@ func (e *Engine) sealLocked(rt *electionRuntime) error {
 	if n == 0 {
 		return nil
 	}
-	if n > e.batchSize {
-		n = e.batchSize
+	if n > rt.batchSize {
+		n = rt.batchSize
 	}
 	batch := rt.pending[:n]
 

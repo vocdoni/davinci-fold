@@ -65,6 +65,7 @@ type foldChain struct {
 	lastFold   string          // last completed fold job on foldWorker, "" before genesis
 	foldCount  uint64          // completed fold steps (digest step_count)
 	pending    []string        // imported batch job IDs not yet folded
+	foldEvery  int             // per-election fold cadence (falls back to the scheduler default)
 }
 
 // NewScheduler builds a scheduler over the engine's storage and a worker pool.
@@ -109,7 +110,10 @@ func (sc *Scheduler) chain(id types.ElectionID) (*foldChain, error) {
 	if w == nil {
 		return nil, errNoWorker
 	}
-	fc := &foldChain{foldWorker: w}
+	fc := &foldChain{foldWorker: w, foldEvery: sc.foldEvery}
+	if el, err := sc.store.Election(id); err == nil && el.FoldEvery > 0 {
+		fc.foldEvery = el.FoldEvery
+	}
 	if cp, err := sc.store.FoldCheckpoint(id); err == nil && cp != nil {
 		fc.aggVK = cp.AggVK
 		fc.batchVK = cp.BatchVK
@@ -244,7 +248,7 @@ func (sc *Scheduler) scatterProve(req *davinci.ProveRequest) (string, *workers.W
 func (sc *Scheduler) maybeFold(id types.ElectionID) error {
 	sc.mu.Lock()
 	fc := sc.chains[id.String()]
-	ready := fc != nil && len(fc.pending) >= sc.foldEvery
+	ready := fc != nil && len(fc.pending) >= fc.foldEvery
 	sc.mu.Unlock()
 	if !ready {
 		return nil

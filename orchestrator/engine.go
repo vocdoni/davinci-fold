@@ -16,6 +16,7 @@ import (
 	"github.com/vocdoni/davinci-fold/storage"
 	"github.com/vocdoni/davinci-fold/types"
 	"github.com/vocdoni/davinci-fold/workers"
+	davinci "github.com/vocdoni/davinci-zkvm/go-sdk"
 	"github.com/vocdoni/davinci-zkvm/go-sdk/chain"
 )
 
@@ -75,12 +76,13 @@ type Engine struct {
 
 // electionRuntime is the live, in-memory working set for one election.
 type electionRuntime struct {
-	mu       sync.Mutex
-	id       types.ElectionID
-	cfg      chain.Config
-	state    *chain.State
-	pending  []*types.Vote // buffered votes not yet sealed, in arrival order
-	batchSeq uint64        // next batch sequence number
+	mu        sync.Mutex
+	id        types.ElectionID
+	cfg       chain.Config
+	state     *chain.State
+	pending   []*types.Vote // buffered votes not yet sealed, in arrival order
+	batchSeq  uint64        // next batch sequence number
+	batchSize int           // per-election seal size (falls back to the engine default)
 }
 
 // NewEngine builds an engine over store, restores any persisted elections into
@@ -175,11 +177,16 @@ func (e *Engine) runtimeFromStorage(el *types.Election) (*electionRuntime, error
 	if err != nil {
 		return nil, fmt.Errorf("list batches: %w", err)
 	}
+	bs := el.BatchSize
+	if bs <= 0 {
+		bs = e.batchSize
+	}
 	return &electionRuntime{
-		id:       el.ID,
-		cfg:      cfg,
-		state:    state,
-		batchSeq: uint64(len(batches)),
+		id:        el.ID,
+		cfg:       cfg,
+		state:     state,
+		batchSeq:  uint64(len(batches)),
+		batchSize: bs,
 	}, nil
 }
 
@@ -202,6 +209,9 @@ func (e *Engine) CreateElection(subject string, el *types.Election) error {
 	if el.BatchSize <= 0 {
 		el.BatchSize = e.batchSize
 	}
+	if el.BatchSize > davinci.MaxBatchSize {
+		return fmt.Errorf("batch size %d exceeds circuit maximum %d", el.BatchSize, davinci.MaxBatchSize)
+	}
 	el.Status = types.StatusActive
 	if err := e.store.CreateElection(el); err != nil {
 		return err
@@ -210,7 +220,7 @@ func (e *Engine) CreateElection(subject string, el *types.Election) error {
 		return fmt.Errorf("persist snapshot: %w", err)
 	}
 	e.mu.Lock()
-	e.runtimes[el.ID.String()] = &electionRuntime{id: el.ID, cfg: cfg, state: state}
+	e.runtimes[el.ID.String()] = &electionRuntime{id: el.ID, cfg: cfg, state: state, batchSize: el.BatchSize}
 	e.mu.Unlock()
 
 	e.audit(subject, "admin", "create_election", el.ID)
