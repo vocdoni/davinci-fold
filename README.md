@@ -144,7 +144,7 @@ flag maps to an underscored, prefixed env var: `--api.port` →
 | `--api.host` | `-h` | `DAVINCIFOLD_API_HOST` | `0.0.0.0` | API bind address. |
 | `--api.port` | `-p` | `DAVINCIFOLD_API_PORT` | `8888` | API port. |
 | `--api.jwtSecret` | | `DAVINCIFOLD_API_JWTSECRET` | — | HMAC secret for admin/keywarden JWTs. **Required.** |
-| `--batch.size` | | `DAVINCIFOLD_BATCH_SIZE` | `64` | Seal a batch once this many votes accumulate. Range `2`–`256` (circuit `MAX_BATCH_SIZE`). |
+| `--batch.size` | | `DAVINCIFOLD_BATCH_SIZE` | `64` | Seal a batch once this many votes accumulate. Range `2`–`128` (circuit `MAX_BATCH_SIZE`). |
 | `--batch.time` | `-b` | `DAVINCIFOLD_BATCH_TIME` | `5m` | Seal a partial batch once its oldest vote is older than this, so low-traffic elections still progress. |
 | `--fold.every` | | `DAVINCIFOLD_FOLD_EVERY` | `4` | Fold after this many imported batch STARKs. Minimum `1`. |
 | `--worker.pollPeriod` | | `DAVINCIFOLD_WORKER_POLLPERIOD` | `10s` | Health-poll interval per prover worker. |
@@ -404,3 +404,9 @@ RUN_INTEGRATION_TESTS=1 DAVINCI_FOLD_WORKER_URLS=http://127.0.0.1:8080 \
 # Adversarial ingest only (no GPU, no workers).
 RUN_INTEGRATION_TESTS=1 go test ./tests/ -run TestAdversarialIngest -v
 ```
+
+The E2E test is parameterized via `E2E_BATCHES`, `E2E_BATCH_SIZE`,
+`E2E_FOLD_EVERY` and `E2E_OVERWRITE_BATCHES` and doubles as a benchmark:
+1024 votes (batch 128, fold every 4) run submission-to-verified-results in
+14m39s (1.17 votes/s) on a single RTX 5090 worker. Full numbers live in
+[davinci-zkvm's BENCHMARK.md](https://github.com/vocdoni/davinci-zkvm/blob/main/BENCHMARK.md).
