@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"github.com/vocdoni/davinci-fold/internal"
+	"github.com/vocdoni/davinci-fold/internal/assets"
 	"github.com/vocdoni/davinci-fold/orchestrator"
 	"github.com/vocdoni/davinci-fold/workers"
 	"github.com/vocdoni/davinci-fold/log"
@@ -129,6 +130,12 @@ func (a *API) registerHandlers() {
 	register(http.MethodGet, WorkersEndpoint, a.listWorkers)
 	a.router.With(a.jwtAuth(RoleAdmin)).Post(WorkerRegisterEndpoint, a.registerWorker)
 	log.Infow("register handler", "endpoint", WorkerRegisterEndpoint, "method", "POST (admin)")
+
+	// Serve the embedded operator UI. Must be last — lowest priority.
+	if assets.FS != nil {
+		a.router.Handle("/*", http.FileServer(http.FS(assets.FS)))
+		log.Infow("serving embedded UI", "path", "/")
+	}
 }
 
 // info reports orchestrator status. GET /info

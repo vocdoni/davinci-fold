@@ -17,6 +17,12 @@
 deadcode.out
 /dist/
 
+# UI
+/ui/node_modules/
+/ui/dist/
+/internal/assets/dist/*
+!/internal/assets/dist/index.html
+
 # Editor / OS
 .DS_Store
 *.swp
