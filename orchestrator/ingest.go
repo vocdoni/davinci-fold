@@ -63,8 +63,7 @@ func (e *Engine) SubmitVote(id types.ElectionID, sub *VoteSubmission) (*types.Vo
 	v := &types.Vote{
 		ID:          voteID,
 		Address:     sub.Address,
-		CensusIdx:   sub.CensusIdx,
-		AddressLo16: sub.AddressLo16,
+		Slot:        sub.Census.SlotKey(),
 		VoteIDKey:   sub.VoteIDKey,
 		Ballot:      sub.Ballot,
 		Payload:     payload,

@@ -128,11 +128,12 @@ func TestAdversarialIngest(t *testing.T) {
 	_, err = engine.SubmitVote(el.ID, bad)
 	assertRejected(t, err, "vote_id_key")
 
-	// 10. Address-low-16 state-tree key does not match the address.
+	// 10. A path bit above the census proof's depth: the Merkle walk ignores
+	// it, so the proof still verifies, but it would move the ballot slot.
 	bad = clone(sub1)
-	bad.AddressLo16 ^= 1
+	bad.Census.Index |= 1 << uint(len(bad.Census.Siblings))
 	_, err = engine.SubmitVote(el.ID, bad)
-	assertRejected(t, err, "address_lo16")
+	assertRejected(t, err, "path bits above depth")
 
 	// 11. A valid signature from a different voter does not authenticate.
 	bad = clone(sub1)

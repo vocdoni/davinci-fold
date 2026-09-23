@@ -50,10 +50,11 @@ func (s VoteStatus) String() string {
 // ballot-proof request body); the orchestrator keeps the light key parts for
 // dedup and state application.
 type Vote struct {
-	ID          VoteID `cbor:"id"`
-	Address     []byte `cbor:"address"`     // voter Ethereum address (20 bytes)
-	CensusIdx   int    `cbor:"censusIdx"`   // voter census index
-	AddressLo16 uint64 `cbor:"addressLo16"` // low 16 bits of address (ballot key)
+	ID      VoteID `cbor:"id"`
+	Address []byte `cbor:"address"` // voter Ethereum address (20 bytes)
+	// Slot is the ballot state-tree key, derived from the census proof
+	// (davinci.CensusProof.SlotKey); the batch guest recomputes it.
+	Slot uint64 `cbor:"slot"`
 	// VoteIDKey is the numeric vote-ID state-tree key (bit 63 set), passed to
 	// chain.Vote at batch application.
 	VoteIDKey uint64 `cbor:"voteIDKey"`

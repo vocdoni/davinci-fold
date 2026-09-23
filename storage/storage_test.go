@@ -71,8 +71,8 @@ func TestVoteLogAndDedup(t *testing.T) {
 	e := sampleElection()
 	c.Assert(s.CreateElection(e), qt.IsNil)
 
-	v1 := &types.Vote{ID: types.VoteID("vote-1"), CensusIdx: 0}
-	v2 := &types.Vote{ID: types.VoteID("vote-2"), CensusIdx: 1}
+	v1 := &types.Vote{ID: types.VoteID("vote-1"), Slot: 0x10}
+	v2 := &types.Vote{ID: types.VoteID("vote-2"), Slot: 0x11}
 	c.Assert(s.AddVote(e.ID, v1), qt.IsNil)
 	c.Assert(s.AddVote(e.ID, v2), qt.IsNil)
 	c.Assert(v1.Seq, qt.Equals, uint64(1))

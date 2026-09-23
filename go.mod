@@ -114,7 +114,6 @@ require (
 	github.com/urfave/cli/v2 v2.27.6 // indirect
 	github.com/vocdoni/arbo v0.0.0-20260501121933-158dce698e7a // indirect
 	github.com/vocdoni/davinci-circom v1.0.0 // indirect
-	github.com/vocdoni/gnark-crypto-primitives v0.0.6 // indirect
 	github.com/vocdoni/lean-imt-go v0.0.2 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/x448/float16 v0.8.4 // indirect

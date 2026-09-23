@@ -341,8 +341,6 @@ github.com/vocdoni/davinci-circom v1.0.0 h1:kTiOP8+RuZ5KUyjUUneFVX/1n+0K68KL9Q5H
 github.com/vocdoni/davinci-circom v1.0.0/go.mod h1:7CdVIumC1seueKlazgQDPNhCwnZhu9gRDlSiBKEM4Sc=
 github.com/vocdoni/davinci-node v0.0.2-0.20260302160544-e9393d9f6610 h1:AREfCoXg6m4+FH7kRc2SS/oUW+WIsSCYieEvfVllNY4=
 github.com/vocdoni/davinci-node v0.0.2-0.20260302160544-e9393d9f6610/go.mod h1:2k2xAD3mI3/5xmzeGdSNNPEx/drqJ2tG7Up1rP6tf4Q=
-github.com/vocdoni/gnark-crypto-primitives v0.0.6 h1:6gEz3h357fG01ZbGn5dHjvCqDM0Lf4Roaqo0JnSEJzI=
-github.com/vocdoni/gnark-crypto-primitives v0.0.6/go.mod h1:kmd5T6ucuWbT9rFC4ACxXztHBq8WEt1uaYoTm8ziLyU=
 github.com/vocdoni/lean-imt-go v0.0.2 h1:wk3aqH4L6VkhGDHrXAu8/sW0Y6WJT9bvJyX2uC9nfK4=
 github.com/vocdoni/lean-imt-go v0.0.2/go.mod h1:kzutM982wYEgEpuiw23mghA1o9UMXyK8Uauu0L0k2OA=
 github.com/wlynxg/anet v0.0.3/go.mod h1:eay5PRQr7fIVAMbTbchTnO9gG65Hg/uYGdc7mguHxoA=

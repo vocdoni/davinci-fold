@@ -195,8 +195,6 @@ func voteSubmission(v *integration.Voter, res *integration.BallotResult, census 
 	return &orchestrator.VoteSubmission{
 		VoteID:       voteIDBytes,
 		Address:      v.AddressBytes,
-		CensusIdx:    v.CensusIdx,
-		AddressLo16:  res.AddressLo16,
 		VoteIDKey:    res.VoteID,
 		Ballot:       ballot.Serialize(),
 		Proof:        res.ProofJSON,

@@ -35,10 +35,9 @@ func (e *Engine) sealLocked(rt *electionRuntime) error {
 			return fmt.Errorf("deserialize ballot %s: %w", v.ID.String(), err)
 		}
 		votes[i] = chain.Vote{
-			CensusIdx:   v.CensusIdx,
-			VoteID:      v.VoteIDKey,
-			AddressLo16: v.AddressLo16,
-			Ballot:      ballot,
+			Slot:   v.Slot,
+			VoteID: v.VoteIDKey,
+			Ballot: ballot,
 		}
 		if err := cbor.Unmarshal(v.Payload, &bundles[i]); err != nil {
 			return fmt.Errorf("decode payload %s: %w", v.ID.String(), err)

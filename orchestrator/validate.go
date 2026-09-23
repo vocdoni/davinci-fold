@@ -25,10 +25,6 @@ type VoteSubmission struct {
 	VoteID []byte `json:"vote_id"`
 	// Address is the voter Ethereum address (20 bytes).
 	Address []byte `json:"address"`
-	// CensusIdx is the voter's census index.
-	CensusIdx int `json:"census_idx"`
-	// AddressLo16 is the low 16 bits of the address (ballot state-tree key).
-	AddressLo16 uint64 `json:"address_lo16"`
 	// VoteIDKey is the numeric vote-ID state-tree key (bit 63 set).
 	VoteIDKey uint64 `json:"vote_id_key"`
 	// Ballot is the voter-encrypted ElGamal ballot, serialized via
@@ -41,8 +37,24 @@ type VoteSubmission struct {
 	PublicInputs []string `json:"public_inputs"`
 	// Sig is the voter ECDSA signature over the ballot.
 	Sig json.RawMessage `json:"sig"`
-	// Census is the lean-IMT membership proof for the voter.
+	// Census is the lean-IMT membership proof for the voter. It also fixes
+	// the voter's ballot slot (CensusProof.SlotKey), so it must be
+	// well-formed: no path bits above its depth, depth within the namespace.
 	Census davinci.CensusProof `json:"census"`
+}
+
+// censusSlotOK rejects census proofs whose slot the batch guest would refuse:
+// path bits the Merkle walk never reads must be zero, and the depth must keep
+// the slot inside the ballot namespace.
+func censusSlotOK(cp davinci.CensusProof) error {
+	depth := len(cp.Siblings)
+	if depth > 61 {
+		return fmt.Errorf("census proof: depth %d exceeds 61", depth)
+	}
+	if cp.Index>>uint(depth) != 0 {
+		return fmt.Errorf("census proof: path bits above depth %d", depth)
+	}
+	return nil
 }
 
 // voteProofBundle is the per-vote proving material persisted in Vote.Payload
@@ -94,7 +106,7 @@ func (structuralValidator) Validate(cfg chain.Config, sub *VoteSubmission) error
 	if root.Cmp(cfg.CensusRoot) != 0 {
 		return fmt.Errorf("census root mismatch")
 	}
-	return nil
+	return censusSlotOK(sub.Census)
 }
 
 // voteSig is the on-disk ECDSA signature format input-gen and the integration
@@ -166,6 +178,9 @@ func (v *cryptoValidator) Validate(cfg chain.Config, sub *VoteSubmission) error 
 	if root.Cmp(cfg.CensusRoot) != 0 {
 		return fmt.Errorf("census root mismatch")
 	}
+	if err := censusSlotOK(sub.Census); err != nil {
+		return err
+	}
 
 	// Bind the public signals and the light state-tree keys to the voter's
 	// address and vote ID, so the proof cannot attest one identity while the
@@ -188,9 +203,6 @@ func (v *cryptoValidator) Validate(cfg chain.Config, sub *VoteSubmission) error 
 	}
 	if !voteID.IsUint64() || voteID.Uint64() != sub.VoteIDKey {
 		return fmt.Errorf("vote_id_key does not match vote_id")
-	}
-	if addr.Uint64()&0xFFFF != sub.AddressLo16 {
-		return fmt.Errorf("address_lo16 does not match address")
 	}
 
 	// ECDSA signature: recover the signer from (R,S,V) over the padded vote ID

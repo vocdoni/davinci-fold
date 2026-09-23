@@ -71,14 +71,13 @@ func makeSub(t *testing.T, encKey *bjjgnark.BJJ, i int) *VoteSubmission {
 	return &VoteSubmission{
 		VoteID:       []byte{byte(0xa0 + i)},
 		Address:      []byte{byte(i + 1)},
-		CensusIdx:    i,
-		AddressLo16:  uint64(i + 1),
 		VoteIDKey:    uint64(i+1) | (uint64(1) << 63),
 		Ballot:       b.Serialize(),
 		Proof:        json.RawMessage(`{"pi_a":[]}`),
 		PublicInputs: []string{"0"},
 		Sig:          json.RawMessage(`{"r":"0"}`),
-		Census:       davinci.CensusProof{Root: testCensusRoot},
+		// A depth-4 proof with leaf index i gives every voter its own slot.
+		Census: davinci.CensusProof{Root: testCensusRoot, Index: uint64(i), Siblings: make([]string, 4)},
 	}
 }
 
