@@ -67,8 +67,8 @@ type EncryptedResultsResponse struct {
 	Ciphertext []string `json:"ciphertext"`
 }
 
-// DecryptionKeyRequest carries the keywarden's decryption key (v1: the raw
-// ElGamal private scalar as 0x big-endian hex). Matches keywarden's request.
+// DecryptionKeyRequest carries the keywarden's decryption key, the raw ElGamal
+// private scalar as 0x big-endian hex. Matches keywarden's request.
 type DecryptionKeyRequest struct {
 	Key string `json:"key"`
 }

@@ -19,8 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vocdoni/davinci-node/db"
 	"github.com/vocdoni/davinci-fold/log"
+	"github.com/vocdoni/davinci-node/db"
 )
 
 var (

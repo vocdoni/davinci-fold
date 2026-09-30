@@ -22,3 +22,6 @@ deadcode.out
 *.swp
 .idea/
 .vscode/
+
+# Local notes
+CLAUDE.md

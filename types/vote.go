@@ -46,9 +46,8 @@ func (s VoteStatus) String() string {
 }
 
 // Vote is an ingested ballot in the ordered vote log. The heavy proof and
-// census material needed only for batch proving travels in Payload (the raw
-// ballot-proof request body); the orchestrator keeps the light key parts for
-// dedup and state application.
+// census material needed only for batch proving travels in Payload; the
+// orchestrator keeps the light key parts for dedup and state application.
 type Vote struct {
 	ID      VoteID `cbor:"id"`
 	Address []byte `cbor:"address"` // voter Ethereum address (20 bytes)
@@ -61,8 +60,8 @@ type Vote struct {
 	// Ballot is the voter-encrypted ElGamal ballot, serialized via
 	// elgamal.Ballot.Serialize.
 	Ballot []byte `cbor:"ballot"`
-	// Payload is the raw self-authenticating submission (ballot proof + ECDSA
-	// signature + census proof) retained for batch proving and audit.
+	// Payload is the CBOR-encoded ballot proof, public inputs, ECDSA signature
+	// and census proof, retained for batch proving and audit.
 	Payload     []byte    `cbor:"payload,omitempty"`
 	Seq         uint64    `cbor:"seq"` // monotonic position in the vote log
 	SubmittedAt time.Time `cbor:"submittedAt"`

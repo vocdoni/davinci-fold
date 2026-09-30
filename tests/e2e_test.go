@@ -153,7 +153,7 @@ func TestScatterGatherE2E(t *testing.T) {
 	c.Assert(err, qt.IsNil, qt.Commentf("encrypted-results status %d", code))
 	c.Assert(len(ctResp.Ciphertext), qt.Equals, davinci.NumFields*4)
 
-	// ...and returns the v1 decryption key (the raw ElGamal private scalar),
+	// ...and returns the decryption key (the raw ElGamal private scalar),
 	// which triggers the GPU-bound finalize (final fold + PLONK). Widen the HTTP
 	// timeout so the synchronous finalize call can complete.
 	services.Client.SetTimeout(25 * time.Minute)
@@ -242,7 +242,7 @@ func plonkFromResults(r *api.ResultsResponse) (*davinci.PlonkSnark, error) {
 // of davinci-fold) for VerifyOnSimulated.
 func solidityDir() string {
 	_, thisFile, _, _ := runtime.Caller(0)
-	// .../davinci-fold/tests/e2e_test.go → /home/p4u → davinci-zkvm/solidity
+	// <parent>/davinci-fold/tests/e2e_test.go -> <parent>/davinci-zkvm/solidity
 	return filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", "..", "davinci-zkvm", "solidity"))
 }
 

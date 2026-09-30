@@ -43,7 +43,7 @@ func TestEncryptedResultsAndSubmitKey(t *testing.T) {
 	c.Assert(ct.ElectionID, qt.Equals, electionID)
 	c.Assert(ct.Ciphertext, qt.DeepEquals, []string{"00", "01"})
 
-	// v1 releases the private scalar as 0x big-endian hex.
+	// The private scalar is sent as 0x big-endian hex.
 	c.Assert(cl.SubmitDecryptionKey(electionID, big.NewInt(0xdead)), qt.IsNil)
 	c.Assert(gotKey, qt.Equals, "0xdead")
 }

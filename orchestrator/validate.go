@@ -67,8 +67,7 @@ type voteProofBundle struct {
 }
 
 // Validator decides whether a submission may enter an election's vote log.
-// Keeping it an interface lets the structural validator be swapped for the full
-// cryptographic verifier without touching the ingest path.
+// Production uses cryptoValidator; unit tests use structuralValidator.
 type Validator interface {
 	Validate(cfg chain.Config, sub *VoteSubmission) error
 }

@@ -96,13 +96,12 @@ func (sc *Scheduler) Finalize(id types.ElectionID, privKey *big.Int) (*types.Res
 	return res, nil
 }
 
-// verifyFinalDigest runs the external consistency + vk-binding checks against
-// the local state, mirroring chain.Sequencer.Finalize. On top of those it
-// proves e2e verifiability: it recomputes the election-identity commitment from
-// the declared initial parameters (config frame ‖ batch_vk ‖ fold_vk) and
-// checks it against the digest, and — when a circuit release is pinned —
-// anchors the proof's program_vk to that release so the fold_vk==program_vk
-// knot binds to a known circuit rather than a self-chosen one.
+// verifyFinalDigest runs the external consistency and vk-binding checks against
+// the local state, mirroring chain.Sequencer.Finalize. It also recomputes the
+// config commitment (config frame ‖ batch_vk ‖ fold_vk) from the creation
+// parameters and, when a circuit release is pinned, requires the proof's
+// program_vk to be the release's aggregator vk, so the fold_vk == program_vk
+// binding points at a known circuit rather than one the worker chose.
 func verifyFinalDigest(d *chain.Digest, snark *davinci.PlonkSnark, state *chain.State, foldCount uint64, batchVK, aggVK string, results []uint64) error {
 	if d.Mode != chain.ModeFinalize {
 		return fmt.Errorf("finalize digest mode = %d, want %d", d.Mode, chain.ModeFinalize)
@@ -128,10 +127,8 @@ func verifyFinalDigest(d *chain.Digest, snark *davinci.PlonkSnark, state *chain.
 		}
 	}
 
-	// Parameter binding: recompute the election-identity commitment from the
-	// declared initial parameters plus the runtime-learned vks and check it
-	// against the digest. This proves the proof attests exactly these params
-	// and this circuit pair, and verifies host/guest commitment parity.
+	// The commitment ties the proof to these election parameters and to this
+	// batch/fold circuit pair.
 	batchWords, err := chain.VKWords(batchVK)
 	if err != nil {
 		return fmt.Errorf("batch vk words: %w", err)
@@ -149,10 +146,8 @@ func verifyFinalDigest(d *chain.Digest, snark *davinci.PlonkSnark, state *chain.
 			d.ConfigCommitment, wantCommit[:])
 	}
 
-	// Absolute anchor: when a canonical circuit release is pinned, the proof's
-	// program_vk must equal the release aggregator vk, and the runtime-learned
-	// vks must match the release. This grounds the fold_vk==program_vk knot in a
-	// known-good circuit instead of trusting whatever the worker reports.
+	// Anchor both vks to the pinned release instead of trusting what the
+	// workers report.
 	if chain.CircuitRelease.IsSet() {
 		if !strings.EqualFold(strings.TrimPrefix(proofVK, "0x"), strings.TrimPrefix(chain.CircuitRelease.AggVK, "0x")) {
 			return fmt.Errorf("proof program_vk %s != release agg vk %s", proofVK, chain.CircuitRelease.AggVK)

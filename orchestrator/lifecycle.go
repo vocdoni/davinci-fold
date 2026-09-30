@@ -60,7 +60,7 @@ func (e *Engine) EncryptedResults(id types.ElectionID) ([]string, error) {
 	return rt.state.EncryptedResults(), nil
 }
 
-// SubmitDecryptionKey accepts the keywarden's decryption key (v1: the raw ElGamal
+// SubmitDecryptionKey accepts the keywarden's decryption key (the raw ElGamal
 // private scalar) for a Decrypting election, runs the finalize (decrypt + final
 // PLONK + external digest verification), persists the Results, and advances the
 // election to Results. On finalize failure the status rolls back to Decrypting so
@@ -76,10 +76,8 @@ func (e *Engine) SubmitDecryptionKey(subject string, id types.ElectionID, key *b
 	if e.scheduler == nil {
 		return nil, fmt.Errorf("no scheduler configured: cannot finalize")
 	}
-	// Single-flight the finalize: even if two callers both observed Decrypting
-	// above, only one acquires the guard. Without it a second finalize would
-	// re-run the PLONK and, on a transient error, roll the status back from
-	// Results to Decrypting.
+	// Two callers may both have seen Decrypting above; only one gets the guard
+	// (see Engine.finalizing).
 	if _, busy := e.finalizing.LoadOrStore(id.String(), struct{}{}); busy {
 		return nil, fmt.Errorf("election %s finalize already in progress", id.String())
 	}

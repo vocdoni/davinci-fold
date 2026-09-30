@@ -4,8 +4,7 @@ import "time"
 
 // BatchInput is the persisted, re-drivable record of one sealed batch: the
 // exact prove request body shipped to a worker plus the bookkeeping needed to
-// re-dispatch it if the worker dies. The orchestrator never loses this, so a
-// batch is always re-provable.
+// re-dispatch it if the worker dies, so a batch can always be proved again.
 type BatchInput struct {
 	ElectionID ElectionID `cbor:"electionID"`
 	Seq        uint64     `cbor:"seq"` // batch sequence within the election
@@ -51,7 +50,8 @@ type Results struct {
 	ElectionID ElectionID `cbor:"electionID"`
 	// Tally is the per-field decrypted result.
 	Tally []uint64 `cbor:"tally"`
-	// PlonkSnark holds the four Solidity-ready hex strings.
+	// ProgramVK, RootCVadcopFinal, PublicValues and ProofBytes are the four
+	// Solidity-ready PLONK arguments as 0x hex.
 	ProgramVK        string    `cbor:"programVK"`
 	RootCVadcopFinal string    `cbor:"rootCVadcopFinal"`
 	PublicValues     string    `cbor:"publicValues"`

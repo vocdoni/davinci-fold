@@ -16,7 +16,7 @@ import (
 
 // NewElectionRequest builds a valid create-election body bound to a fresh
 // ElGamal key, returning the request and the private scalar the keywarden
-// returns as the v1 decryption key at finalize.
+// returns as the decryption key at finalize.
 func NewElectionRequest(processID string, batchSize, foldEvery int, endTime time.Time) (*api.ElectionCreateRequest, *big.Int, error) {
 	pub, priv, err := elgamal.GenerateKey(bjjgnark.New())
 	if err != nil {

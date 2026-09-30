@@ -14,9 +14,9 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"github.com/vocdoni/davinci-fold/internal"
+	"github.com/vocdoni/davinci-fold/log"
 	"github.com/vocdoni/davinci-fold/orchestrator"
 	"github.com/vocdoni/davinci-fold/workers"
-	"github.com/vocdoni/davinci-fold/log"
 )
 
 const maxRequestBodyLog = 512 // Maximum request-body length to log.

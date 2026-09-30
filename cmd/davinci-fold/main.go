@@ -7,11 +7,11 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/vocdoni/davinci-fold/log"
 	"github.com/vocdoni/davinci-fold/service"
 	"github.com/vocdoni/davinci-fold/storage"
 	"github.com/vocdoni/davinci-node/db"
 	"github.com/vocdoni/davinci-node/db/metadb"
-	"github.com/vocdoni/davinci-fold/log"
 )
 
 // Services holds all the running services.

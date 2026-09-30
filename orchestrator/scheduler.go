@@ -16,9 +16,9 @@ import (
 )
 
 // maxJobAttempts bounds how many times a failed prove/fold job is resubmitted
-// with the same (deterministic) input before giving up on a worker. ZisK
-// occasionally flakes at the recursion stage; the input is identical, so
-// resubmitting elsewhere is always safe. Mirrors chain.Sequencer.
+// with the same (deterministic) input before giving up. ZisK occasionally
+// flakes at the recursion stage; the input is identical, so resubmitting
+// elsewhere is always safe. Mirrors chain.Sequencer.
 const maxJobAttempts = 3
 
 // errNoWorker is returned when no healthy, non-banned worker is available.

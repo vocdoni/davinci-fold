@@ -1,12 +1,11 @@
-// Command test-keywarden is the v1 local keywarden for davinci-fold. It owns the
-// election encryption keypair: it generates one (keygen), prints the public key
-// for election creation, and on demand fetches an election's encrypted results
-// ciphertext from the orchestrator and returns the decryption key (finalize).
+// Command test-keywarden is a minimal local keywarden for davinci-fold, meant
+// for testing. It owns the election encryption keypair: it generates one
+// (keygen), prints the public key for election creation, and on demand fetches
+// an election's encrypted results ciphertext from the orchestrator and returns
+// the decryption key (finalize).
 //
-// It stands in for a future on-chain DKG. The private key lives only here and in
-// the keyfile; the orchestrator never receives it until the keywarden chooses to
-// release it at finalize. v1's "decryption key" is the raw ElGamal private
-// scalar; a DKG variant will return threshold shares through the same handshake.
+// The private key lives only in the keyfile until finalize, when it is released
+// to the orchestrator as the raw ElGamal private scalar.
 package main
 
 import (
@@ -85,8 +84,8 @@ func keygen(keyPath string) error {
 }
 
 // finalize fetches the election's published ciphertext (completing the keywarden
-// handshake) and returns the decryption key, triggering the orchestrator's
-// finalize. v1 releases the raw private scalar.
+// handshake) and returns the decryption key, the raw private scalar, triggering
+// the orchestrator's finalize.
 func finalize(keyPath, orchestrator, token, election string) error {
 	if election == "" {
 		return fmt.Errorf("--election is required")

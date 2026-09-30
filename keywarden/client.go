@@ -1,9 +1,7 @@
 // Package keywarden is the client side of the key-abstracted finalize: the
-// orchestrator holds only the voter encryption public key, publishes the
-// encrypted results ciphertext at election end, and receives a decryption key
-// back. v1 uses a local test keywarden (cmd/test-keywarden); the handshake is
-// shaped for a future on-chain DKG, which will swap the raw scalar below for
-// threshold decryption shares without changing the two-phase flow.
+// orchestrator holds only the election encryption public key, publishes the
+// encrypted results ciphertext at election end, and receives the decryption key
+// back from the keywarden. cmd/test-keywarden is built on this client.
 package keywarden
 
 import (
@@ -17,15 +15,15 @@ import (
 )
 
 // EncryptedResultsResponse is the orchestrator's published results ciphertext:
-// 32 Twisted-Edwards little-endian hex coordinates (8 ElGamal ciphertexts).
+// one ElGamal ciphertext per ballot field, each as four little-endian hex
+// Twisted-Edwards coordinates.
 type EncryptedResultsResponse struct {
 	ElectionID string   `json:"election_id"`
 	Ciphertext []string `json:"ciphertext"`
 }
 
 // DecryptionKeyRequest carries the key the keywarden returns for an election's
-// results. For v1 this is the raw ElGamal private scalar as 0x big-endian hex;
-// a future DKG variant carries threshold shares instead.
+// results: the raw ElGamal private scalar as 0x big-endian hex.
 type DecryptionKeyRequest struct {
 	Key string `json:"key"`
 }
@@ -71,7 +69,7 @@ func (c *Client) EncryptedResults(electionID string) (*EncryptedResultsResponse,
 	return &out, nil
 }
 
-// SubmitDecryptionKey posts the decryption key (v1: the raw private scalar),
+// SubmitDecryptionKey posts the decryption key (the raw private scalar),
 // triggering the orchestrator's finalize.
 func (c *Client) SubmitDecryptionKey(electionID string, key *big.Int) error {
 	body, err := json.Marshal(&DecryptionKeyRequest{Key: "0x" + key.Text(16)})

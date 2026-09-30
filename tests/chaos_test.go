@@ -18,9 +18,10 @@ func TestChaosBatchWorkerDeath(t *testing.T) {
 	t.Skip("chaos: batch-worker death pending ballot-generation + worker process control")
 }
 
-// TestChaosFoldWorkerDeath kills the pinned fold worker and asserts the
-// orchestrator re-pins a new fold worker, re-imports every batch blob
-// (re-proving any missing ones), and re-folds from genesis to the same tally.
+// TestChaosFoldWorkerDeath is a placeholder that always skips. It is meant to
+// kill the pinned fold worker and check that the orchestrator re-pins a new one,
+// re-imports every batch proof and re-folds from genesis to the same tally,
+// which the orchestrator does not do yet.
 func TestChaosFoldWorkerDeath(t *testing.T) {
 	requireWorkers(t, 2)
 	// TODO(integration): drive folds onto worker A, stop A, assert re-pin to B

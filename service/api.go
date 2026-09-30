@@ -43,6 +43,6 @@ func NewAPI(ctx context.Context, conf APIConfig) (*APIService, error) {
 	return &APIService{API: a}, nil
 }
 
-// Stop shuts the API service down. The HTTP server is bound to the parent
-// context passed at construction; nothing to release explicitly yet.
+// Stop is a no-op: the HTTP server is not bound to a context and runs until the
+// process exits.
 func (s *APIService) Stop() {}
