@@ -81,10 +81,14 @@ func (s *Storage) setVoteStatusLocked(id types.ElectionID, voteID types.VoteID, 
 	}{Status: st})
 }
 
-// SetVoteStatus updates a vote's pipeline status.
+// SetVoteStatus moves a vote to status st, unless it is already there or
+// past it (see types.VoteStatus), which leaves it unchanged.
 func (s *Storage) SetVoteStatus(id types.ElectionID, voteID types.VoteID, st types.VoteStatus) error {
 	s.globalLock.Lock()
 	defer s.globalLock.Unlock()
+	if cur, err := s.VoteStatus(id, voteID); err == nil && !cur.CanMoveTo(st) {
+		return nil
+	}
 	return s.setVoteStatusLocked(id, voteID, st)
 }
 

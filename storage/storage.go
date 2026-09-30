@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vocdoni/davinci-fold/log"
@@ -58,6 +59,10 @@ type reservationRecord struct {
 	Timestamp int64 `cbor:"timestamp"`
 }
 
+// defaultReservationTimeout is how old a reservation must be before the
+// monitor frees it, until SetReservationTimeout sets it.
+const defaultReservationTimeout = 5 * time.Minute
+
 // Storage manages persisted artifacts with reservations and in-memory locks.
 type Storage struct {
 	db     db.Database
@@ -65,6 +70,10 @@ type Storage struct {
 	cancel context.CancelFunc
 
 	globalLock sync.Mutex
+
+	// reservationTimeout is the age after which a reservation counts as
+	// stale (nanoseconds).
+	reservationTimeout atomic.Int64
 
 	// processingAddresses tracks "electionID:address" currently in flight,
 	// preventing two concurrent votes from the same voter racing.
@@ -78,6 +87,7 @@ type Storage struct {
 func New(database db.Database) *Storage {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Storage{db: database, ctx: ctx, cancel: cancel}
+	s.reservationTimeout.Store(int64(defaultReservationTimeout))
 	if err := s.recover(); err != nil {
 		log.Errorw(err, "failed to clear stale reservations on startup")
 	}
@@ -122,7 +132,15 @@ func (s *Storage) recover() error {
 	return nil
 }
 
-// monitorStaleReservations periodically frees reservations older than 5m.
+// SetReservationTimeout sets how old a reservation must be before the
+// monitor frees it. The holder of a reservation must finish its work within
+// this time.
+func (s *Storage) SetReservationTimeout(d time.Duration) {
+	s.reservationTimeout.Store(int64(d))
+}
+
+// monitorStaleReservations periodically frees the reservations older than
+// the reservation timeout.
 func (s *Storage) monitorStaleReservations() {
 	ticker := time.NewTicker(60 * time.Second)
 	go func() {
@@ -132,7 +150,7 @@ func (s *Storage) monitorStaleReservations() {
 			case <-s.ctx.Done():
 				return
 			case <-ticker.C:
-				if err := s.releaseStaleReservations(5 * time.Minute); err != nil {
+				if err := s.releaseStaleReservations(time.Duration(s.reservationTimeout.Load())); err != nil {
 					log.Warnw("failed to release stale reservations", "error", err)
 				}
 			}

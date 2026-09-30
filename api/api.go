@@ -89,7 +89,7 @@ func (a *API) initRouter() {
 		AllowCredentials: false,
 		MaxAge:           300,
 	}).Handler)
-	a.router.Use(loggingMiddleware(maxRequestBodyLog))
+	a.router.Use(loggingMiddleware(maxRequestBodyLog, a.redactedRoute))
 	a.router.Use(middleware.Recoverer)
 	a.router.Use(middleware.Throttle(100))
 	a.router.Use(middleware.ThrottleBacklog(5000, 40000, 60*time.Second))
@@ -104,31 +104,35 @@ func (a *API) registerHandlers() {
 		log.Infow("register handler", "endpoint", endpoint, "method", method)
 		a.router.Method(method, endpoint, h)
 	}
+	// registerAuth registers a route that needs a token of the given role.
+	registerAuth := func(method, endpoint, role string, h http.HandlerFunc) {
+		log.Infow("register handler", "endpoint", endpoint, "method", method, "role", role)
+		a.router.With(a.jwtAuth(role)).Method(method, endpoint, h)
+	}
 
 	register(http.MethodGet, PingEndpoint, func(w http.ResponseWriter, _ *http.Request) { httpWriteOK(w) })
 	register(http.MethodGet, InfoEndpoint, a.info)
 
-	// Elections (creation is admin-only; listing/reading is public).
-	a.router.With(a.jwtAuth(RoleAdmin)).Post(ElectionsEndpoint, a.createElection)
-	log.Infow("register handler", "endpoint", ElectionsEndpoint, "method", "POST (admin)")
+	// Elections (the organizer creates them and changes their status;
+	// listing/reading is public).
+	registerAuth(http.MethodPost, ElectionsEndpoint, RoleAdmin, a.createElection)
 	register(http.MethodGet, ElectionsEndpoint, a.listElections)
 	register(http.MethodGet, ElectionEndpoint, a.getElection)
+	registerAuth(http.MethodPost, ElectionStatusEndpoint, RoleAdmin, a.setElectionStatus)
 
 	// Votes are self-authenticating.
 	register(http.MethodPost, VotesEndpoint, a.newVote)
 	register(http.MethodGet, VoteEndpoint, a.getVote)
 
 	// Two-phase finalize handshake (keywarden-authenticated).
-	a.router.With(a.jwtAuth(RoleKeywarden)).Get(EncryptedResultsEndpoint, a.encryptedResults)
-	log.Infow("register handler", "endpoint", EncryptedResultsEndpoint, "method", "GET (keywarden)")
-	a.router.With(a.jwtAuth(RoleKeywarden)).Post(DecryptionKeyEndpoint, a.decryptionKey)
-	log.Infow("register handler", "endpoint", DecryptionKeyEndpoint, "method", "POST (keywarden)")
+	registerAuth(http.MethodGet, EncryptedResultsEndpoint, RoleKeywarden, a.encryptedResults)
+	registerAuth(http.MethodPost, DecryptionKeyEndpoint, RoleKeywarden, a.decryptionKey)
 	register(http.MethodGet, ResultsEndpoint, a.results)
 
 	// Worker pool.
 	register(http.MethodGet, WorkersEndpoint, a.listWorkers)
-	a.router.With(a.jwtAuth(RoleAdmin)).Post(WorkerRegisterEndpoint, a.registerWorker)
-	log.Infow("register handler", "endpoint", WorkerRegisterEndpoint, "method", "POST (admin)")
+	registerAuth(http.MethodPost, WorkerRegisterEndpoint, RoleAdmin, a.registerWorker)
+	registerAuth(http.MethodDelete, WorkerEndpoint, RoleAdmin, a.removeWorker)
 }
 
 // info reports orchestrator status. GET /info

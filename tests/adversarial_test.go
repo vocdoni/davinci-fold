@@ -63,41 +63,41 @@ func TestAdversarialIngest(t *testing.T) {
 
 	// 2. Resending the same vote ID is rejected as a duplicate.
 	_, err = engine.SubmitVote(el.ID, sub0)
-	assertRejected(t, err, "duplicate vote")
+	assertRejected(t, err, orchestrator.ErrVoteAlreadySubmitted, "duplicate vote")
 
 	// 3. Submitting to an unknown election is rejected.
 	_, err = engine.SubmitVote(types.ElectionID{0xde, 0xad}, clone(sub1))
-	assertRejected(t, err, "unknown election")
+	assertRejected(t, err, orchestrator.ErrElectionNotFound, "election not found")
 
 	// 4. Wrong address length.
 	bad := clone(sub1)
 	bad.Address = bad.Address[:19]
 	_, err = engine.SubmitVote(el.ID, bad)
-	assertRejected(t, err, "address must be")
+	assertRejected(t, err, orchestrator.ErrMalformedVote, "address must be")
 
 	// 5. Malformed ballot ciphertext (truncated) fails deserialization.
 	bad = clone(sub1)
 	bad.Ballot = bad.Ballot[:len(bad.Ballot)-5]
 	_, err = engine.SubmitVote(el.ID, bad)
-	assertRejected(t, err, "malformed ballot")
+	assertRejected(t, err, orchestrator.ErrMalformedVote, "malformed ballot")
 
 	// 6. Wrong public-signal count.
 	bad = clone(sub1)
 	bad.PublicInputs = bad.PublicInputs[:2]
 	_, err = engine.SubmitVote(el.ID, bad)
-	assertRejected(t, err, "public_inputs")
+	assertRejected(t, err, orchestrator.ErrInvalidBallotProof, "public_inputs")
 
 	// 7. Census root does not match the election's census.
 	bad = clone(sub1)
 	bad.Census.Root = feHex(big.NewInt(0xdead))
 	_, err = engine.SubmitVote(el.ID, bad)
-	assertRejected(t, err, "census root mismatch")
+	assertRejected(t, err, orchestrator.ErrInvalidCensusProof, "census root mismatch")
 
 	// 7b. A census value the prover cannot parse (not 32-byte hex).
 	bad = clone(sub1)
 	bad.Census.Root = "0xdead"
 	_, err = engine.SubmitVote(el.ID, bad)
-	assertRejected(t, err, "census root: want 32 bytes")
+	assertRejected(t, err, orchestrator.ErrInvalidCensusProof, "census root: want 32 bytes")
 
 	// 7c. The right root with a path that does not lead to it: a non-member
 	// cannot get a ballot into a batch the guest would then reject.
@@ -105,13 +105,13 @@ func TestAdversarialIngest(t *testing.T) {
 	bad.Census.Siblings = append([]string(nil), sub1.Census.Siblings...)
 	bad.Census.Siblings[0] = feHex(big.NewInt(12345))
 	_, err = engine.SubmitVote(el.ID, bad)
-	assertRejected(t, err, "census proof does not reach the census root")
+	assertRejected(t, err, orchestrator.ErrInvalidCensusProof, "census proof does not reach the census root")
 
 	// 7d. Another member's census proof does not authorize this address.
 	bad = clone(sub1)
 	bad.Census = sub0.Census
 	_, err = engine.SubmitVote(el.ID, bad)
-	assertRejected(t, err, "census leaf is for address")
+	assertRejected(t, err, orchestrator.ErrInvalidCensusProof, "census leaf is for address")
 
 	// 8. Address does not match the proof's public signal (identity swap,
 	// with the census proof of the claimed address).
@@ -119,54 +119,54 @@ func TestAdversarialIngest(t *testing.T) {
 	bad.Address = append([]byte(nil), election.Voters[0].AddressBytes...)
 	bad.Census = sub0.Census
 	_, err = engine.SubmitVote(el.ID, bad)
-	assertRejected(t, err, "public_inputs address")
+	assertRejected(t, err, orchestrator.ErrInvalidBallotProof, "public_inputs address")
 
 	// 9. Vote-ID state-tree key does not match the vote ID.
 	bad = clone(sub1)
 	bad.VoteIDKey ^= 1
 	_, err = engine.SubmitVote(el.ID, bad)
-	assertRejected(t, err, "vote_id_key")
+	assertRejected(t, err, orchestrator.ErrMalformedVote, "vote_id_key")
 
 	// 10. A path bit above the census proof's depth: the Merkle walk ignores
 	// it, but the guest rejects the proof.
 	bad = clone(sub1)
 	bad.Census.Index |= 1 << uint(len(bad.Census.Siblings))
 	_, err = engine.SubmitVote(el.ID, bad)
-	assertRejected(t, err, "path bits above depth")
+	assertRejected(t, err, orchestrator.ErrInvalidCensusProof, "path bits above depth")
 
 	// 11. A valid signature from a different voter does not authenticate.
 	bad = clone(sub1)
 	bad.Sig = sub0.Sig
 	_, err = engine.SubmitVote(el.ID, bad)
-	assertRejected(t, err, "signature verification failed")
+	assertRejected(t, err, orchestrator.ErrInvalidSignature, "does not recover to the voter's address")
 
 	// 12. A tampered Groth16 ballot proof: a coordinate off the curve fails
 	// to parse, valid points in the wrong places fail verification.
 	bad = clone(sub1)
 	bad.Proof = editJSON(c, sub1.Proof, func(m map[string]any) { m["pi_a"].([]any)[0] = "12345" })
 	_, err = engine.SubmitVote(el.ID, bad)
-	assertRejected(t, err, "ballot proof: pi_a: G1 point not on the curve")
+	assertRejected(t, err, orchestrator.ErrInvalidBallotProof, "ballot proof: pi_a: G1 point not on the curve")
 	bad.Proof = editJSON(c, sub1.Proof, func(m map[string]any) { m["pi_a"], m["pi_c"] = m["pi_c"], m["pi_a"] })
 	_, err = engine.SubmitVote(el.ID, bad)
-	assertRejected(t, err, "ballot proof: invalid proof")
+	assertRejected(t, err, orchestrator.ErrInvalidBallotProof, "does not verify under the election's vk")
 
 	// 13. A proof point the prover would read as the identity.
 	bad.Proof = editJSON(c, sub1.Proof, func(m map[string]any) { m["pi_c"].([]any)[2] = "0" })
 	_, err = engine.SubmitVote(el.ID, bad)
-	assertRejected(t, err, "ballot proof: pi_c: G1 point must be")
+	assertRejected(t, err, orchestrator.ErrInvalidBallotProof, "ballot proof: pi_c: G1 point must be")
 
 	// 14. A public signal the prover cannot parse as a decimal field element.
 	bad = clone(sub1)
 	bad.PublicInputs = []string{sub1.PublicInputs[0], sub1.PublicInputs[1], "+" + sub1.PublicInputs[2]}
 	_, err = engine.SubmitVote(el.ID, bad)
-	assertRejected(t, err, "public_inputs: [2]")
+	assertRejected(t, err, orchestrator.ErrInvalidBallotProof, "public_inputs: [2]")
 
 	// 15. A valid proof with another ballot: the inputs hash no longer
 	// matches, which the guest would reject for the whole batch.
 	bad = clone(sub1)
 	bad.Ballot = sub0.Ballot
 	_, err = engine.SubmitVote(el.ID, bad)
-	assertRejected(t, err, "inputs hash does not match")
+	assertRejected(t, err, orchestrator.ErrInvalidBallotProof, "inputs hash does not match")
 
 	// 16. A padded field (past the ballot mode's fields) that is not the
 	// identity. The ballot proof leaves padded fields unconstrained.
@@ -175,20 +175,20 @@ func TestAdversarialIngest(t *testing.T) {
 		b.Ciphertexts[davinci.NumFields-1] = b.Ciphertexts[0]
 	})
 	_, err = engine.SubmitVote(el.ID, bad)
-	assertRejected(t, err, "field 15 must be the identity")
+	assertRejected(t, err, orchestrator.ErrMalformedVote, "field 15 must be the identity")
 
 	// 17. A vote ID with a second encoding (a leading zero byte) of the same
 	// state key.
 	bad = clone(sub1)
 	bad.VoteID = append([]byte{0}, sub1.VoteID...)
 	_, err = engine.SubmitVote(el.ID, bad)
-	assertRejected(t, err, "vote_id must be 8 bytes")
+	assertRejected(t, err, orchestrator.ErrMalformedVote, "vote_id must be 8 bytes")
 
 	// 18. A recovery id the guest cannot use.
 	bad = clone(sub1)
 	bad.Sig = editJSON(c, sub1.Sig, func(m map[string]any) { m["signature_v"] = 2 })
 	_, err = engine.SubmitVote(el.ID, bad)
-	assertRejected(t, err, "recovery id 2")
+	assertRejected(t, err, orchestrator.ErrInvalidSignature, "recovery id 2")
 
 	// 19. The voter-1 ballot is accepted, proving the mutations above were
 	// the sole cause of each rejection. It is sent in encodings the prover
@@ -250,7 +250,7 @@ func TestIngestCensusWeight(t *testing.T) {
 	engine, el := newIngestEngineWithRoot(c, election, nil, root)
 	defer engine.Stop()
 	_, err = engine.SubmitVote(el.ID, voteSubmission(election.Voters[1], batch.Results[1], census))
-	assertRejected(t, err, "inputs hash does not match")
+	assertRejected(t, err, orchestrator.ErrInvalidBallotProof, "inputs hash does not match")
 }
 
 // editJSON returns raw with edit applied to it as a JSON object.
@@ -318,10 +318,10 @@ func clone(s *orchestrator.VoteSubmission) *orchestrator.VoteSubmission {
 	return &cp
 }
 
-// assertRejected fails unless err is non-nil and mentions want.
-func assertRejected(t *testing.T, err error, want string) {
+// assertRejected fails unless err is the rejection reason and mentions want.
+func assertRejected(t *testing.T, err, reason error, want string) {
 	t.Helper()
-	qt.Assert(t, err, qt.IsNotNil)
+	qt.Assert(t, err, qt.ErrorIs, reason)
 	qt.Assert(t, strings.Contains(err.Error(), want), qt.IsTrue,
 		qt.Commentf("want error containing %q, got %v", want, err))
 }

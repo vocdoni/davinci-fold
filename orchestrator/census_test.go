@@ -162,7 +162,8 @@ func TestIngestRejectsNonMember(t *testing.T) {
 	sub := makeSub(t, encKey, 0)
 	sub.Address = testAddress(testCensusSize)
 	_, err := e.SubmitVote(el.ID, sub)
-	c.Assert(err, qt.ErrorMatches, "invalid vote: census leaf is for address .*")
+	c.Assert(err, qt.ErrorIs, ErrInvalidCensusProof)
+	c.Assert(err, qt.ErrorMatches, "invalid census proof: census leaf is for address .*")
 
 	// The member itself is accepted.
 	_, err = e.SubmitVote(el.ID, makeSub(t, encKey, 0))

@@ -85,14 +85,54 @@ func (a *API) getElection(w http.ResponseWriter, r *http.Request) {
 	httpWriteJSON(w, electionResponse(el))
 }
 
+// settableStatuses are the statuses an organizer can request, by name.
+var settableStatuses = map[string]types.Status{
+	types.StatusActive.String():   types.StatusActive,
+	types.StatusPaused.String():   types.StatusPaused,
+	types.StatusEnded.String():    types.StatusEnded,
+	types.StatusCanceled.String(): types.StatusCanceled,
+}
+
+// setElectionStatus pauses, resumes, ends or cancels an election.
+// POST /elections/{id}/status (admin)
+func (a *API) setElectionStatus(w http.ResponseWriter, r *http.Request) {
+	subject := subjectFromContext(r.Context())
+	id, err := electionIDFromURL(r)
+	if err != nil {
+		ErrMalformedParam.WithErr(err).Write(w)
+		return
+	}
+	var req ElectionStatusRequest
+	if err := httpReadJSON(r, &req); err != nil {
+		ErrMalformedBody.WithErr(err).Write(w)
+		return
+	}
+	status, ok := settableStatuses[req.Status]
+	if !ok {
+		ErrMalformedParam.Withf("status must be active, paused, ended or canceled, got %q", req.Status).Write(w)
+		return
+	}
+	if err := a.engine.SetStatus(subject, id, status); err != nil {
+		engineError(err).Write(w)
+		return
+	}
+	el, err := a.engine.Election(id)
+	if err != nil {
+		ErrGenericInternalServerError.WithErr(err).Write(w)
+		return
+	}
+	httpWriteJSON(w, electionResponse(el))
+}
+
 // electionResponse maps a stored election to its public view.
 func electionResponse(el *types.Election) *ElectionResponse {
 	return &ElectionResponse{
-		ID:        el.ID.String(),
-		Status:    el.Status.String(),
-		BatchSize: el.BatchSize,
-		FoldEvery: el.FoldEvery,
-		EndTime:   el.EndTime.UTC(),
-		CreatedAt: el.CreatedAt.UTC(),
+		ID:            el.ID.String(),
+		Status:        el.Status.String(),
+		BatchSize:     el.BatchSize,
+		FoldEvery:     el.FoldEvery,
+		EndTime:       el.EndTime.UTC(),
+		CreatedAt:     el.CreatedAt.UTC(),
+		FinalizeError: el.FinalizeError,
 	}
 }

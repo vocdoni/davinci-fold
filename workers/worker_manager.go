@@ -10,6 +10,8 @@ package workers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,6 +35,7 @@ var DefaultWorkerBanRules = &WorkerBanRules{
 
 // WorkerInfo is the public, serializable snapshot of a worker.
 type WorkerInfo struct {
+	ID           string `json:"id"`
 	Address      string `json:"address"`
 	Name         string `json:"name"`
 	Healthy      bool   `json:"healthy"`
@@ -45,6 +48,7 @@ type WorkerInfo struct {
 // Worker is a remote Rust prover service. Counters are accessed atomically so a
 // Worker is safe for concurrent use without an external lock.
 type Worker struct {
+	ID      string // WorkerID(Address)
 	Address string // base URL, the map key
 	Name    string
 
@@ -56,6 +60,13 @@ type Worker struct {
 	failedCount      int64 // atomic
 	queueLen         int64 // atomic, refreshed by the health poll
 	healthy          int32 // atomic bool (1 = reachable at last poll)
+}
+
+// WorkerID is the identifier of the worker at address: the first 8 bytes of
+// its SHA-256, in hex. It is stable across registrations.
+func WorkerID(address string) string {
+	h := sha256.Sum256([]byte(address))
+	return hex.EncodeToString(h[:8])
 }
 
 // Client returns the worker's go-sdk client.
@@ -104,6 +115,7 @@ func (w *Worker) SetBannedUntil(t time.Time) {
 // Info returns a serializable snapshot of the worker.
 func (w *Worker) Info(rules *WorkerBanRules) *WorkerInfo {
 	return &WorkerInfo{
+		ID:           w.ID,
 		Address:      w.Address,
 		Name:         w.Name,
 		Healthy:      w.Healthy(),
@@ -189,6 +201,7 @@ func (wm *WorkerManager) AddWorker(address, name string) *Worker {
 		return w
 	}
 	w := &Worker{
+		ID:      WorkerID(address),
 		Address: address,
 		Name:    name,
 		client:  davinci.NewClient(address),
@@ -209,6 +222,26 @@ func (wm *WorkerManager) GetWorker(address string) (*Worker, bool) {
 		return w.(*Worker), true
 	}
 	return nil, false
+}
+
+// WorkerByID retrieves a worker by its ID.
+func (wm *WorkerManager) WorkerByID(id string) (*Worker, bool) {
+	var found *Worker
+	wm.workers.Range(func(_, value any) bool {
+		if w, ok := value.(*Worker); ok && w.ID == id {
+			found = w
+			return false
+		}
+		return true
+	})
+	return found, found != nil
+}
+
+// Has reports whether w is still in the pool (it was not removed since it
+// was handed out).
+func (wm *WorkerManager) Has(w *Worker) bool {
+	cur, ok := wm.GetWorker(w.Address)
+	return ok && cur == w
 }
 
 // LeastLoaded returns the healthy, non-banned worker with the smallest polled

@@ -2,7 +2,9 @@ package orchestrator
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -16,12 +18,48 @@ import (
 	"github.com/vocdoni/davinci-zkvm/go-sdk/chain"
 )
 
+// Finalize failure reasons. Their messages are the public summary of a failed
+// finalize (Election.FinalizeError, see finalizeSummary), so they never carry
+// prover addresses, job IDs or proof values; the full error goes to the log
+// and the audit trail.
+var (
+	errProverUnavailable   = errors.New("prover unavailable")
+	errFinalizeInterrupted = errors.New("finalize interrupted")
+	errNothingToFinalize   = errors.New("nothing to finalize")
+	errFinalFoldFailed     = errors.New("fold failed")
+	errDecryptionFailed    = errors.New("decryption failed")
+	errFinalProofFailed    = errors.New("final proof failed")
+	errVerificationFailed  = errors.New("final proof verification failed")
+	errFinalizeInternal    = errors.New("internal error")
+)
+
+// finalizeSummary returns the reason a finalize failed with err, one of the
+// errors above: no prover to run it and an interruption first, then the step
+// that failed.
+func finalizeSummary(err error) string {
+	switch {
+	case errors.Is(err, errNoWorker), errors.Is(err, errWorkerRemoved), errors.Is(err, errProverUnavailable):
+		return errProverUnavailable.Error()
+	case errors.Is(err, context.Canceled), errors.Is(err, errFinalizeInterrupted):
+		return errFinalizeInterrupted.Error()
+	}
+	for _, reason := range []error{
+		errNothingToFinalize, errFinalFoldFailed, errDecryptionFailed, errFinalProofFailed, errVerificationFailed,
+	} {
+		if errors.Is(err, reason) {
+			return reason.Error()
+		}
+	}
+	return errFinalizeInternal.Error()
+}
+
 // Finalize closes an election's chain: it drains any pending batches into the
 // fold head, decrypts the accumulators with privKey, runs the finalize +
 // final PLONK on the pinned fold worker, verifies the returned digest against
 // the local state (the same external checks chain.Sequencer.Finalize performs),
 // and persists the resulting Results. The privKey is the keywarden-provided
-// decryption scalar; it is used only here and never stored.
+// decryption scalar; it is used only here and never stored. An error wraps
+// the reason of the step that failed (see finalizeSummary).
 func (sc *Scheduler) Finalize(id types.ElectionID, privKey *big.Int) (*types.Results, error) {
 	rt, ok := sc.engine.runtime(id)
 	if !ok {
@@ -30,7 +68,7 @@ func (sc *Scheduler) Finalize(id types.ElectionID, privKey *big.Int) (*types.Res
 
 	// Drain any remaining imported batches into the fold head.
 	if err := sc.Fold(id); err != nil {
-		return nil, fmt.Errorf("final fold: %w", err)
+		return nil, fmt.Errorf("%w: %w", errFinalFoldFailed, err)
 	}
 
 	fc, err := sc.chain(id)
@@ -42,13 +80,15 @@ func (sc *Scheduler) Finalize(id types.ElectionID, privKey *big.Int) (*types.Res
 	w := fc.foldWorker
 	sc.mu.Unlock()
 	if lastFold == "" {
-		return nil, fmt.Errorf("nothing to finalize: no fold in the chain")
+		return nil, fmt.Errorf("%w: no fold in the chain", errNothingToFinalize)
 	}
 
-	chainCfg := *rt.state.ChainConfig()
-	payload, results, err := rt.state.ResultsPayload(privKey)
+	// The election has ended: its state no longer changes.
+	state := rt.current()
+	chainCfg := *state.ChainConfig()
+	payload, results, err := state.ResultsPayload(privKey)
 	if err != nil {
-		return nil, fmt.Errorf("ResultsPayload: %w", err)
+		return nil, fmt.Errorf("%w: %w", errDecryptionFailed, err)
 	}
 
 	finID, err := sc.runFinalize(w, &davinci.FinalizeRequest{
@@ -58,24 +98,24 @@ func (sc *Scheduler) Finalize(id types.ElectionID, privKey *big.Int) (*types.Res
 		Results: *payload,
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", errFinalProofFailed, err)
 	}
 
 	publics, err := w.Client().FetchPublics(finID)
 	if err != nil {
-		return nil, fmt.Errorf("FetchPublics %s: %w", finID, err)
+		return nil, fmt.Errorf("%w: FetchPublics %s: %w", errFinalProofFailed, finID, err)
 	}
 	digest, err := chain.ParseDigest(publics)
 	if err != nil {
-		return nil, fmt.Errorf("parse digest: %w", err)
+		return nil, fmt.Errorf("%w: parse digest: %w", errFinalProofFailed, err)
 	}
 	snark, err := w.Client().FetchSnark(finID)
 	if err != nil {
-		return nil, fmt.Errorf("FetchSnark %s: %w", finID, err)
+		return nil, fmt.Errorf("%w: FetchSnark %s: %w", errFinalProofFailed, finID, err)
 	}
 
-	if err := verifyFinalDigest(digest, snark, rt.state, foldCount, batchVK, aggVK, results); err != nil {
-		return nil, err
+	if err := verifyFinalDigest(digest, snark, state, foldCount, batchVK, aggVK, results); err != nil {
+		return nil, fmt.Errorf("%w: %w", errVerificationFailed, err)
 	}
 
 	res := &types.Results{
@@ -168,12 +208,15 @@ func (sc *Scheduler) runFinalize(w *workers.Worker, req *davinci.FinalizeRequest
 		if err != nil {
 			return "", fmt.Errorf("submit finalize: %w", err)
 		}
-		if _, err := w.Client().WaitForJob(id, sc.timeout); err == nil {
+		err = sc.waitJob(w, id)
+		if err == nil {
 			sc.pool.WorkerResult(w.Address, true)
 			return id, nil
-		} else {
-			lastErr = fmt.Errorf("finalize job %s (attempt %d/%d): %w", id, attempt, maxJobAttempts, err)
-			sc.pool.WorkerResult(w.Address, false)
+		}
+		lastErr = fmt.Errorf("finalize job %s (attempt %d/%d): %w", id, attempt, maxJobAttempts, err)
+		sc.pool.WorkerResult(w.Address, false)
+		if errors.Is(err, errWorkerRemoved) || sc.ctx.Err() != nil {
+			break
 		}
 	}
 	return "", lastErr

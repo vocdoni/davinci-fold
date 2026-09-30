@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"math/big"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -154,10 +155,13 @@ func TestScatterGatherE2E(t *testing.T) {
 	c.Assert(len(ctResp.Ciphertext), qt.Equals, davinci.NumFields*4)
 
 	// ...and returns the decryption key (the raw ElGamal private scalar),
-	// which triggers the GPU-bound finalize (final fold + PLONK). Widen the HTTP
-	// timeout so the synchronous finalize call can complete.
-	services.Client.SetTimeout(25 * time.Minute)
-	results, err := services.Client.SubmitDecryptionKey(ctx, keywarden, el.ID, election.EncPrivKey)
+	// which starts the GPU-bound finalize (final fold + PLONK) in the
+	// background; the election's status says when it is done.
+	accepted, code, err := services.Client.SubmitDecryptionKey(ctx, keywarden, el.ID, election.EncPrivKey)
+	c.Assert(err, qt.IsNil)
+	c.Assert(code, qt.Equals, http.StatusAccepted)
+	c.Assert(accepted.ID, qt.Equals, el.ID)
+	results, err := services.Client.WaitResults(ctx, el.ID, 25*time.Minute)
 	c.Assert(err, qt.IsNil)
 	c.Assert(len(results.Tally), qt.Equals, davinci.NumFields)
 	t.Logf("finalize complete; tally=%v", results.Tally)

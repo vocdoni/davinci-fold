@@ -28,13 +28,6 @@ func NewClient(baseURL string) *Client {
 	return &Client{baseURL: strings.TrimRight(baseURL, "/"), http: &http.Client{Timeout: 30 * time.Second}}
 }
 
-// SetTimeout adjusts the per-request HTTP timeout. The decryption-key call
-// blocks on the GPU-bound finalize (a final fold + PLONK), which far exceeds
-// the default, so the E2E test widens it before that call.
-func (c *Client) SetTimeout(d time.Duration) {
-	c.http.Timeout = d
-}
-
 // WaitReady polls GET /ping until it answers 200 or the deadline elapses.
 func (c *Client) WaitReady(ctx context.Context, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
@@ -132,14 +125,47 @@ func (c *Client) EncryptedResults(ctx context.Context, token, id string) (*api.E
 }
 
 // SubmitDecryptionKey hands the decryption key to the orchestrator (keywarden),
-// triggering finalize. The key is sent as 0x big-endian hex.
-func (c *Client) SubmitDecryptionKey(ctx context.Context, token, id string, key *big.Int) (*api.ResultsResponse, error) {
-	var out api.ResultsResponse
+// which starts the finalize and answers 202 with the election. The key is
+// sent as 0x big-endian hex.
+func (c *Client) SubmitDecryptionKey(ctx context.Context, token, id string, key *big.Int) (*api.ElectionResponse, int, error) {
+	var out api.ElectionResponse
 	req := &api.DecryptionKeyRequest{Key: "0x" + key.Text(16)}
-	if _, err := c.do(ctx, http.MethodPost, "/elections/"+id+"/decryption-key", token, req, &out); err != nil {
-		return nil, err
+	code, err := c.do(ctx, http.MethodPost, "/elections/"+id+"/decryption-key", token, req, &out)
+	if err != nil {
+		return nil, code, err
 	}
-	return &out, nil
+	return &out, code, nil
+}
+
+// WaitResults polls an election until it has results, which it returns, or
+// its finalize fails or the timeout elapses.
+func (c *Client) WaitResults(ctx context.Context, id string, timeout time.Duration) (*api.ResultsResponse, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		el, err := c.GetElection(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		switch {
+		case el.Status == "results":
+			return c.Results(ctx, id)
+		case el.FinalizeError != "":
+			return nil, fmt.Errorf("finalize failed: %s", el.FinalizeError)
+		case time.Now().After(deadline):
+			return nil, fmt.Errorf("no results within %s (status %s)", timeout, el.Status)
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+// SetElectionStatus asks for an election status change (admin).
+func (c *Client) SetElectionStatus(ctx context.Context, token, id, status string) (*api.ElectionResponse, int, error) {
+	var out api.ElectionResponse
+	code, err := c.do(ctx, http.MethodPost, "/elections/"+id+"/status", token, &api.ElectionStatusRequest{Status: status}, &out)
+	if err != nil {
+		return nil, code, err
+	}
+	return &out, code, nil
 }
 
 // Results reads the final tally and PLONK snark.
@@ -155,6 +181,11 @@ func (c *Client) Results(ctx context.Context, id string) (*api.ResultsResponse, 
 func (c *Client) RegisterWorker(ctx context.Context, token, address, name string) error {
 	_, err := c.do(ctx, http.MethodPost, api.WorkerRegisterEndpoint, token, &api.WorkerRegisterRequest{Address: address, Name: name}, nil)
 	return err
+}
+
+// RemoveWorker takes a prover worker out of the pool (admin).
+func (c *Client) RemoveWorker(ctx context.Context, token, workerID string) (int, error) {
+	return c.do(ctx, http.MethodDelete, "/workers/"+workerID, token, nil, nil)
 }
 
 // ListWorkers returns the current pool.

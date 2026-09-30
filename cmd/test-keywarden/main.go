@@ -1,8 +1,8 @@
 // Command test-keywarden is a minimal local keywarden for davinci-fold, meant
 // for testing. It owns the election encryption keypair: it generates one
 // (keygen), prints the public key for election creation, and on demand fetches
-// an election's encrypted results ciphertext from the orchestrator and returns
-// the decryption key (finalize).
+// an election's encrypted results ciphertext from the orchestrator, returns
+// the decryption key and waits for the results, which it prints (finalize).
 //
 // The private key lives only in the keyfile until finalize, when it is released
 // to the orchestrator as the raw ElGamal private scalar.
@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"time"
 
 	flag "github.com/spf13/pflag"
 
@@ -33,12 +34,16 @@ type keyFile struct {
 	Priv string `json:"priv"`
 }
 
+// resultsPollInterval is how often finalize polls the election for results.
+const resultsPollInterval = 5 * time.Second
+
 func main() {
 	mode := flag.String("mode", "", "keygen | finalize")
 	keyPath := flag.String("keyfile", "keywarden-key.json", "keypair file path")
-	orchestrator := flag.String("orchestrator", "http://127.0.0.1:8080", "orchestrator base URL (finalize)")
+	orchestrator := flag.String("orchestrator", "http://127.0.0.1:8888", "orchestrator base URL (finalize)")
 	token := flag.String("token", "", "keywarden bearer token (finalize)")
 	election := flag.String("election", "", "election ID hex (finalize)")
+	timeout := flag.Duration("timeout", 30*time.Minute, "how long to wait for the results (finalize)")
 	flag.Parse()
 
 	log.Init("info", "stdout", nil)
@@ -49,7 +54,7 @@ func main() {
 			log.Fatalf("keygen failed: %v", err)
 		}
 	case "finalize":
-		if err := finalize(*keyPath, *orchestrator, *token, *election); err != nil {
+		if err := finalize(*keyPath, *orchestrator, *token, *election, *timeout); err != nil {
 			log.Fatalf("finalize failed: %v", err)
 		}
 	default:
@@ -84,9 +89,10 @@ func keygen(keyPath string) error {
 }
 
 // finalize fetches the election's published ciphertext (completing the keywarden
-// handshake) and returns the decryption key, the raw private scalar, triggering
-// the orchestrator's finalize.
-func finalize(keyPath, orchestrator, token, election string) error {
+// handshake), returns the decryption key, the raw private scalar, which starts
+// the orchestrator's finalize, and waits up to timeout for the results, which
+// it prints as JSON.
+func finalize(keyPath, orchestrator, token, election string, timeout time.Duration) error {
 	if election == "" {
 		return fmt.Errorf("--election is required")
 	}
@@ -113,7 +119,17 @@ func finalize(keyPath, orchestrator, token, election string) error {
 	if err := c.SubmitDecryptionKey(election, priv); err != nil {
 		return fmt.Errorf("submit decryption key: %w", err)
 	}
-	log.Infow("submitted decryption key", "election", election)
+	log.Infow("submitted decryption key, waiting for the results", "election", election, "timeout", timeout.String())
+
+	res, err := c.WaitForResults(election, resultsPollInterval, timeout)
+	if err != nil {
+		return err
+	}
+	out, err := json.MarshalIndent(res, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(out))
 	return nil
 }
 

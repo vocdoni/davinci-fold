@@ -8,6 +8,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"sync"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 // Default sealing parameters.
 const (
 	defaultBatchSize       = 64
+	defaultFoldEvery       = 1
 	defaultBatchTimeWindow = 30 * time.Second
 	monitorInterval        = time.Second
 )
@@ -44,9 +46,10 @@ type Options struct {
 	// engine in ingest-only mode (batches are sealed and persisted but not
 	// proved), which is what the unit tests exercise.
 	Pool *workers.WorkerManager
-	// FoldEvery is the fold cadence handed to the scheduler (batches per fold).
+	// FoldEvery is the fold cadence (batches per fold) of the elections that
+	// do not set their own.
 	FoldEvery int
-	// JobTimeout bounds each prove/fold WaitForJob.
+	// JobTimeout bounds each prove, fold and finalize job.
 	JobTimeout time.Duration
 }
 
@@ -55,6 +58,7 @@ type Engine struct {
 	store     *storage.Storage
 	validator Validator
 	batchSize int
+	foldEvery int
 	window    time.Duration
 
 	ctx    context.Context
@@ -62,6 +66,9 @@ type Engine struct {
 
 	// scheduler is nil in ingest-only mode (no worker pool configured).
 	scheduler *Scheduler
+	// finalize proves an election's results with its decryption key:
+	// Scheduler.Finalize, nil in ingest-only mode.
+	finalize func(id types.ElectionID, key *big.Int) (*types.Results, error)
 
 	// draining guards the per-election Ended->Decrypting drive so the
 	// once-per-second monitor never starts a second drain for the same election.
@@ -76,16 +83,28 @@ type Engine struct {
 	runtimes map[string]*electionRuntime
 }
 
-// electionRuntime is the live, in-memory working set for one election.
+// electionRuntime is the live, in-memory working set for one election. mu
+// guards pending, batchSeq, dirty and state, which sealing mutates and may
+// replace.
 type electionRuntime struct {
 	mu        sync.Mutex
 	id        types.ElectionID
 	cfg       chain.Config
 	rules     *voteRules // what ingest checks this election's votes against
 	state     *chain.State
+	dirty     bool          // state changed since the persisted snapshot
 	pending   []*types.Vote // buffered votes not yet sealed, in arrival order
 	batchSeq  uint64        // next batch sequence number
 	batchSize int           // per-election seal size (falls back to the engine default)
+}
+
+// current returns the election's state. Once the election stops sealing
+// batches (it ended), the state no longer changes and can be read without
+// rt.mu.
+func (rt *electionRuntime) current() *chain.State {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.state
 }
 
 // NewEngine builds an engine over store, restores any persisted elections into
@@ -96,6 +115,9 @@ func NewEngine(store *storage.Storage, opts Options) (*Engine, error) {
 	}
 	if opts.BatchSize <= 0 {
 		opts.BatchSize = defaultBatchSize
+	}
+	if opts.FoldEvery <= 0 {
+		opts.FoldEvery = defaultFoldEvery
 	}
 	if opts.BatchTimeWindow <= 0 {
 		opts.BatchTimeWindow = defaultBatchTimeWindow
@@ -108,6 +130,7 @@ func NewEngine(store *storage.Storage, opts Options) (*Engine, error) {
 		store:     store,
 		validator: opts.Validator,
 		batchSize: opts.BatchSize,
+		foldEvery: opts.FoldEvery,
 		window:    opts.BatchTimeWindow,
 		ctx:       ctx,
 		cancel:    cancel,
@@ -115,6 +138,7 @@ func NewEngine(store *storage.Storage, opts Options) (*Engine, error) {
 	}
 	if opts.Pool != nil {
 		e.scheduler = NewScheduler(e, opts.Pool, opts.FoldEvery, opts.JobTimeout)
+		e.finalize = e.scheduler.Finalize
 	}
 	if err := e.restore(); err != nil {
 		cancel()
@@ -145,6 +169,18 @@ func (e *Engine) restore() error {
 	for _, el := range elections {
 		if el.Status == types.StatusCanceled || el.Status == types.StatusResults {
 			continue
+		}
+		if el.Status == types.StatusFinalizing {
+			// The finalize died with the previous process; the keywarden
+			// submits the key again.
+			if err := e.store.UpdateElection(el.ID, func(stored *types.Election) error {
+				stored.Status = types.StatusDecrypting
+				stored.FinalizeError = errFinalizeInterrupted.Error()
+				return nil
+			}); err != nil {
+				log.Warnw("failed to reset interrupted finalize", "election", el.ID.String(), "error", err.Error())
+			}
+			el.Status = types.StatusDecrypting
 		}
 		rt, err := e.runtimeFromStorage(el)
 		if err != nil {
@@ -225,6 +261,9 @@ func (e *Engine) CreateElection(subject string, el *types.Election) error {
 	if el.BatchSize <= 0 {
 		el.BatchSize = e.batchSize
 	}
+	if el.FoldEvery <= 0 {
+		el.FoldEvery = e.foldEvery
+	}
 	if el.BatchSize > davinci.MaxBatchSize {
 		return fmt.Errorf("batch size %d exceeds circuit maximum %d", el.BatchSize, davinci.MaxBatchSize)
 	}
@@ -246,12 +285,32 @@ func (e *Engine) CreateElection(subject string, el *types.Election) error {
 
 // Election returns the persisted election record.
 func (e *Engine) Election(id types.ElectionID) (*types.Election, error) {
-	return e.store.Election(id)
+	el, err := e.store.Election(id)
+	if err != nil {
+		return nil, err
+	}
+	return e.withDefaults(el), nil
 }
 
 // ListElections returns all persisted elections.
 func (e *Engine) ListElections() ([]*types.Election, error) {
-	return e.store.ListElections()
+	els, err := e.store.ListElections()
+	if err != nil {
+		return nil, err
+	}
+	for _, el := range els {
+		e.withDefaults(el)
+	}
+	return els, nil
+}
+
+// withDefaults sets the fold cadence of an election stored without one (it
+// uses the engine default).
+func (e *Engine) withDefaults(el *types.Election) *types.Election {
+	if el.FoldEvery <= 0 {
+		el.FoldEvery = e.foldEvery
+	}
+	return el
 }
 
 // runtime returns the live runtime for an election, if loaded.
@@ -268,6 +327,11 @@ func (e *Engine) AuditWorkerRegister(subject, address string) {
 	e.audit(subject, "admin", "register_worker:"+address, types.ElectionID{})
 }
 
+// AuditWorkerRemove records an admin worker removal.
+func (e *Engine) AuditWorkerRemove(subject, address string) {
+	e.audit(subject, "admin", "remove_worker:"+address, types.ElectionID{})
+}
+
 // audit appends an accountability record, logging on failure.
 func (e *Engine) audit(subject, role, action string, id types.ElectionID) {
 	if err := e.store.AppendAudit(&types.AuditRecord{
@@ -282,7 +346,7 @@ func (e *Engine) audit(subject, role, action string, id types.ElectionID) {
 }
 
 // monitor periodically advances the lifecycle: it seals stale partial batches
-// and moves Active elections past their end time to Ended.
+// and ends the active and paused elections past their end time.
 func (e *Engine) monitor() {
 	ticker := time.NewTicker(monitorInterval)
 	defer ticker.Stop()
@@ -311,9 +375,11 @@ func (e *Engine) tick() {
 			continue
 		}
 		switch el.Status {
-		case types.StatusActive:
+		case types.StatusActive, types.StatusPaused:
 			if !el.EndTime.IsZero() && time.Now().After(el.EndTime) {
-				e.endElection(rt, el)
+				if err := e.changeStatus(rt, "system", "system", types.StatusEnded); err != nil {
+					log.Warnw("failed to end election", "election", rt.id.String(), "error", err.Error())
+				}
 				continue
 			}
 			e.sealIfStale(rt)
@@ -325,39 +391,15 @@ func (e *Engine) tick() {
 	}
 }
 
-// sealIfStale seals a partial batch whose oldest pending vote has aged past the
-// batch time window.
+// sealIfStale seals partial batches while the oldest pending vote has aged
+// past the batch time window.
 func (e *Engine) sealIfStale(rt *electionRuntime) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	if len(rt.pending) == 0 {
-		return
-	}
-	if time.Since(rt.pending[0].SubmittedAt) < e.window {
-		return
-	}
-	if err := e.sealLocked(rt); err != nil {
-		log.Warnw("failed to seal stale batch", "election", rt.id.String(), "error", err.Error())
-	}
-}
-
-// endElection seals the remaining votes, in as many batches as their slots
-// need, and transitions the election to Ended.
-func (e *Engine) endElection(rt *electionRuntime, el *types.Election) {
-	rt.mu.Lock()
-	for len(rt.pending) > 0 {
+	for len(rt.pending) > 0 && time.Since(rt.pending[0].SubmittedAt) >= e.window {
 		if err := e.sealLocked(rt); err != nil {
-			log.Warnw("failed to seal final batch", "election", rt.id.String(), "error", err.Error())
-			rt.mu.Unlock()
+			log.Warnw("failed to seal stale batch", "election", rt.id.String(), "error", err.Error())
 			return
 		}
 	}
-	rt.mu.Unlock()
-
-	if err := e.store.SetElectionStatus(rt.id, types.StatusEnded); err != nil {
-		log.Warnw("failed to set election ended", "election", rt.id.String(), "error", err.Error())
-		return
-	}
-	e.audit("system", "system", "end_election", rt.id)
-	log.Infow("election ended", "election", rt.id.String(), "root", rt.state.Root())
 }

@@ -55,6 +55,20 @@ func TestElectionCRUD(t *testing.T) {
 	c.Assert(err, qt.IsNil)
 	c.Assert(got.Status, qt.Equals, types.StatusActive)
 
+	// A failing update writes nothing.
+	c.Assert(s.UpdateElection(e.ID, func(el *types.Election) error {
+		el.Status = types.StatusEnded
+		return ErrNotFound
+	}), qt.Equals, ErrNotFound)
+	c.Assert(s.UpdateElection(e.ID, func(el *types.Election) error {
+		el.FinalizeError = "boom"
+		return nil
+	}), qt.IsNil)
+	got, err = s.Election(e.ID)
+	c.Assert(err, qt.IsNil)
+	c.Assert(got.Status, qt.Equals, types.StatusActive)
+	c.Assert(got.FinalizeError, qt.Equals, "boom")
+
 	all, err := s.ListElections()
 	c.Assert(err, qt.IsNil)
 	c.Assert(len(all), qt.Equals, 1)
@@ -91,6 +105,23 @@ func TestVoteLogAndDedup(t *testing.T) {
 	c.Assert(s.SetVoteStatus(e.ID, v1.ID, types.VoteStatusBatched), qt.IsNil)
 	st, _ = s.VoteStatus(e.ID, v1.ID)
 	c.Assert(st, qt.Equals, types.VoteStatusBatched)
+
+	// Statuses only move forward, and error and settled are final.
+	for _, step := range []struct{ set, want types.VoteStatus }{
+		{types.VoteStatusFolded, types.VoteStatusFolded},
+		{types.VoteStatusBatched, types.VoteStatusFolded},
+		{types.VoteStatusError, types.VoteStatusError},
+		{types.VoteStatusSettled, types.VoteStatusError},
+		{types.VoteStatusPending, types.VoteStatusError},
+	} {
+		c.Assert(s.SetVoteStatus(e.ID, v1.ID, step.set), qt.IsNil)
+		st, _ = s.VoteStatus(e.ID, v1.ID)
+		c.Assert(st, qt.Equals, step.want, qt.Commentf("set %s", step.set))
+	}
+	c.Assert(s.SetVoteStatus(e.ID, v2.ID, types.VoteStatusSettled), qt.IsNil)
+	c.Assert(s.SetVoteStatus(e.ID, v2.ID, types.VoteStatusError), qt.IsNil)
+	st, _ = s.VoteStatus(e.ID, v2.ID)
+	c.Assert(st, qt.Equals, types.VoteStatusSettled)
 
 	// Address lock is exclusive until released.
 	addr := big.NewInt(0xdead)

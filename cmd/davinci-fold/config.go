@@ -65,7 +65,7 @@ type WorkerConfig struct {
 type LogConfig struct {
 	Level      string `mapstructure:"level"`
 	Output     string `mapstructure:"output"`
-	DisableAPI bool   `mapstructure:"disableAPI"` // Disable API logging middleware
+	DisableAPI bool   `mapstructure:"disableAPI"` // Disable API request/response logging
 }
 
 // loadConfig loads configuration from flags, environment variables and defaults.
@@ -92,7 +92,7 @@ func loadConfig() (*Config, error) {
 	// Logging
 	flag.StringP("log.level", "l", defaultLogLevel, "log level (debug, info, warn, error, fatal)")
 	flag.StringP("log.output", "o", defaultLogOutput, "log output (stdout, stderr or filepath)")
-	flag.Bool("log.disableAPI", false, "disable API logging middleware")
+	flag.Bool("log.disableAPI", false, "disable API request/response logging (debug level)")
 	// Storage
 	flag.StringP("datadir", "d", defaultDatadirPath, "data directory for database and storage files")
 

@@ -11,15 +11,18 @@ type ElectionID []byte
 // String returns the hex encoding of the election ID.
 func (e ElectionID) String() string { return hex.EncodeToString(e) }
 
-// Status is the lifecycle state of an election.
+// Status is the lifecycle state of an election. The values are persisted:
+// never renumber them.
 type Status uint8
 
 const (
-	// StatusCreated: election exists, not yet accepting votes.
+	// StatusCreated is the zero value. Elections are created active, so no
+	// election is ever in it.
 	StatusCreated Status = iota
 	// StatusActive: accepting votes, batches sealing and proving.
 	StatusActive
-	// StatusEnded: past endTime, votes closed, draining the fold chain.
+	// StatusEnded: votes closed (end time or organizer), draining the fold
+	// chain.
 	StatusEnded
 	// StatusDecrypting: encrypted results published, awaiting the keywarden's
 	// decryption key.
@@ -28,9 +31,11 @@ const (
 	StatusFinalizing
 	// StatusResults: final tally + PLONK available.
 	StatusResults
-	// StatusPaused: temporarily not accepting votes (admin).
+	// StatusPaused: not accepting votes (organizer); accepted votes keep
+	// being sealed and proved.
 	StatusPaused
-	// StatusCanceled: terminated without results (admin).
+	// StatusCanceled: stopped without results (organizer); nothing is sealed,
+	// proved or folded any more.
 	StatusCanceled
 )
 
@@ -86,4 +91,8 @@ type Election struct {
 	CreatedAt  time.Time      `cbor:"createdAt"`
 	UpdatedAt  time.Time      `cbor:"updatedAt"`
 	FoldWorker string         `cbor:"foldWorker,omitempty"` // pinned fold worker URL
+	// FinalizeError is a short, fixed reason the last finalize failed, empty
+	// otherwise; the detail is in the log. It is cleared when a decryption
+	// key is submitted again.
+	FinalizeError string `cbor:"finalizeError,omitempty"`
 }

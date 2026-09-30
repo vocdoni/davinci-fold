@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/vocdoni/davinci-fold/workers"
 )
 
@@ -34,4 +35,23 @@ func (a *API) registerWorker(w http.ResponseWriter, r *http.Request) {
 	worker := a.pool.AddWorker(req.Address, req.Name)
 	a.engine.AuditWorkerRegister(subject, req.Address)
 	httpWriteJSON(w, worker.Info(workers.DefaultWorkerBanRules))
+}
+
+// removeWorker takes a prover worker out of the pool. Its running jobs count
+// as failed and are sent to other workers.
+// DELETE /workers/{workerID} (admin)
+func (a *API) removeWorker(w http.ResponseWriter, r *http.Request) {
+	subject := subjectFromContext(r.Context())
+	if a.pool == nil {
+		ErrWorkerNotFound.Write(w)
+		return
+	}
+	worker, ok := a.pool.WorkerByID(chi.URLParam(r, WorkerURLParam))
+	if !ok {
+		ErrWorkerNotFound.Write(w)
+		return
+	}
+	a.pool.RemoveWorker(worker.Address)
+	a.engine.AuditWorkerRemove(subject, worker.Address)
+	httpWriteOK(w)
 }

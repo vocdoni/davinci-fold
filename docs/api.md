@@ -13,9 +13,11 @@ an HS256 JWT signed with `--api.jwtSecret` and carrying these claims:
 |---|---|
 | `role` | `admin` or `keywarden` |
 | `sub` | Caller name, recorded in the audit log. |
-| `exp` | Expiry as a Unix timestamp. |
+| `exp` | Expiry as a Unix timestamp. Required: a token without it is rejected. |
 
-The README shows how to mint a token from a shell.
+A missing or malformed header, a bad signature, an expired token or one without `exp` gets
+`401` (`40005`); a valid token whose role the route does not allow gets `403` (`40004`). The
+README shows how to mint a token from a shell.
 
 ## Service
 
@@ -58,7 +60,8 @@ Returns the election:
  "endTime": "2026-12-01T18:00:00Z", "createdAt": "2026-11-30T09:00:00Z"}
 ```
 
-`foldEvery` reads `0` when the election uses the process default.
+`batchSize` and `foldEvery` are the values the election uses, the process defaults when the
+request did not set them.
 
 ### `GET /elections`
 
@@ -66,8 +69,31 @@ Returns the election:
 
 ### `GET /elections/{id}`
 
-One election. `status` is one of `active`, `ended`, `decrypting`, `finalizing` or `results`
-(see [architecture.md](architecture.md#election-lifecycle)).
+One election. `status` is one of `active`, `paused`, `ended`, `decrypting`, `finalizing`,
+`results` or `canceled` (see [architecture.md](architecture.md#election-lifecycle)). After a
+failed finalize the election is `decrypting` again and `finalizeError` says why, in one of
+`prover unavailable`, `finalize interrupted`, `nothing to finalize`, `fold failed`,
+`decryption failed`, `final proof failed`, `final proof verification failed` or
+`internal error`. The details are in the service log.
+
+### Change an election's status
+
+`POST /elections/{id}/status` (admin)
+
+```json
+{"status": "ended"}
+```
+
+| From | To |
+|---|---|
+| `active` | `paused`, `ended` or `canceled` |
+| `paused` | `active`, `ended` or `canceled` |
+
+`paused` stops taking votes; the accepted ones are still sealed and proved. `ended` does what
+the end time does: the pending votes are sealed and the election then waits for the decryption
+key. `canceled` stops all work for the election: nothing more is sealed, proved or folded, and
+its votes read `error`; the election stays readable. Any other change returns `409` (`40017`),
+another status name `400` (`40003`). Returns the election.
 
 ## Votes
 
@@ -103,15 +129,31 @@ elements, `leaf` is `address << 88 | weight` for the submitted `address`, and `i
 path bits, with no bits set above the proof depth, which is at most 61. The voter's ballot slot
 is derived from the address, so a later vote from the same address overwrites the earlier one.
 
-Returns `{"voteID": "<hex>", "status": "accepted"}`. A rejected vote returns error `40009`
-with the reason in the message: failed verification (ballot proof, signature or census proof),
-a repeated vote ID, an election that is not `active` or another vote from the same address
-still being processed.
+Returns `{"voteID": "<hex>", "status": "accepted"}`. A rejected vote gets the error of its
+reason, with the detail in the message:
+
+| Code | HTTP | Reason |
+|---|---|---|
+| 40006 | 404 | No such election. |
+| 40008 | 400 | The election is not `active`. |
+| 40009 | 400 | The ballot proof or its public inputs do not verify or do not match the vote. |
+| 40010 | 400 | The signature is malformed or not by `address`. |
+| 40011 | 400 | The census proof is malformed, does not reach `censusRoot` or is not for `address`. |
+| 40012 | 409 | The vote ID was already accepted, or a vote with this vote ID or address is being processed. |
+| 40002 | 400 | Anything else about the body: JSON, `address`, `vote_id` or `ballot` encoding. |
 
 ### `GET /elections/{id}/votes/{voteID}`
 
-`{"voteID": "<hex>", "status": "pending", "seq": 12}`. `status` is `pending` until the vote is
-sealed into a batch, then `batched`; `seq` is its position in the election's vote log.
+`{"voteID": "<hex>", "status": "pending", "seq": 12}`. `seq` is the vote's position in the
+election's vote log. `status` moves forward only:
+
+| Status | Meaning |
+|---|---|
+| `pending` | Accepted, waiting to be sealed into a batch. |
+| `batched` | Sealed into a batch, which is being proved. |
+| `folded` | Its batch proof is folded into the election's chain. |
+| `settled` | The election's final proof is verified and its results stored. |
+| `error` | The election state refused the vote when it was sealed, or the election was canceled. |
 
 ## Results
 
@@ -132,10 +174,14 @@ Available once the election is `decrypting`:
 {"key": "0x<private scalar, big-endian hex>"}
 ```
 
-Runs the final fold, decryption and PLONK proof, verifies the result and moves the election
-to `results`. The call returns when finalize is done, which takes minutes, with the same body
-as `GET /results`. If the client disconnects earlier, finalize still completes. On failure the
-election goes back to `decrypting` and the key can be submitted again.
+The key must be the private key of the election's `encX`, `encY`: a malformed key gets `400`
+(`40003`), another key `400` (`40018`), and the election is unchanged. A valid key moves the
+election to `finalizing` and the call returns `202` with the election. The final fold,
+decryption and PLONK proof then run in the background, which takes minutes; follow them with
+`GET /elections/{id}`. The election ends at `results`, or goes back to `decrypting` with
+`finalizeError` set, when the key can be submitted again. A key submitted while the election
+is not `decrypting`, `finalizing` included, gets `409` (`40017`). Neither the request nor the
+response is logged.
 
 ### `GET /elections/{id}/results`
 
@@ -167,9 +213,16 @@ unchanged. Returns the prover as listed below.
 ### `GET /workers`
 
 ```json
-{"workers": [{"address": "http://10.0.0.5:8080", "name": "gpu-0", "healthy": true,
-  "queueLen": 0, "banned": false, "successCount": 42, "failedCount": 1}]}
+{"workers": [{"id": "5f1c0e2a9b3d4c7e", "address": "http://10.0.0.5:8080", "name": "gpu-0",
+  "healthy": true, "queueLen": 0, "banned": false, "successCount": 42, "failedCount": 1}]}
 ```
+
+`id` is derived from `address`, so it stays the same when the prover is registered again.
+
+### `DELETE /workers/{id}` (admin)
+
+Removes a prover from the pool. Its running jobs count as failed and go to other provers, as
+when a prover dies. Returns `200`, or `404` (`40015`) for an unknown `id`.
 
 ## Errors
 
@@ -178,16 +231,23 @@ Errors carry an HTTP status and a JSON body such as
 
 | Code | HTTP | Meaning |
 |---|---|---|
-| 40002 | 400 | Malformed JSON body. |
-| 40003 | 400 | Malformed parameter (bad hex, invalid election configuration). |
-| 40004 | 403 | Missing token or role not allowed on this route. |
-| 40005 | 401 | Invalid or expired token. |
+| 40002 | 400 | Malformed JSON body, or a malformed vote. |
+| 40003 | 400 | Malformed parameter (bad hex, invalid election configuration, unknown status). |
+| 40004 | 403 | The token's role is not allowed on this route. |
+| 40005 | 401 | Missing, invalid or expired token, or a token without `exp`. |
 | 40006 | 404 | Election not found. |
 | 40007 | 409 | Election already exists. |
-| 40009 | 400 | Vote rejected. |
+| 40008 | 400 | Election not accepting votes. |
+| 40009 | 400 | Invalid ballot proof. |
+| 40010 | 400 | Invalid signature. |
+| 40011 | 400 | Invalid census proof. |
+| 40012 | 409 | Vote already submitted or being processed. |
 | 40013 | 404 | Vote not found. |
-| 40014 | 409 | Results not ready, or finalize failed. |
+| 40014 | 409 | Results not ready. |
+| 40015 | 404 | Prover not found. |
 | 40016 | 400 | Malformed prover registration. |
+| 40017 | 409 | The election's status does not allow this change. |
+| 40018 | 400 | The decryption key does not match the election's key. |
 | 50001 | 500 | Response encoding failed. |
 | 50002 | 500 | Internal error. |
 

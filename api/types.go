@@ -32,14 +32,22 @@ type ElectionCreateRequest struct {
 	EndTime      time.Time       `json:"endTime,omitempty"`
 }
 
-// ElectionResponse is the public view of an election record.
+// ElectionResponse is the public view of an election record. FinalizeError
+// is why the last finalize failed; the election is then decrypting again.
 type ElectionResponse struct {
-	ID        string    `json:"id"`
-	Status    string    `json:"status"`
-	BatchSize int       `json:"batchSize"`
-	FoldEvery int       `json:"foldEvery"`
-	EndTime   time.Time `json:"endTime"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID            string    `json:"id"`
+	Status        string    `json:"status"`
+	BatchSize     int       `json:"batchSize"`
+	FoldEvery     int       `json:"foldEvery"`
+	EndTime       time.Time `json:"endTime"`
+	CreatedAt     time.Time `json:"createdAt"`
+	FinalizeError string    `json:"finalizeError,omitempty"`
+}
+
+// ElectionStatusRequest is the organizer's body for POST
+// /elections/{id}/status: "active", "paused", "ended" or "canceled".
+type ElectionStatusRequest struct {
+	Status string `json:"status"`
 }
 
 // ElectionsResponse lists elections.

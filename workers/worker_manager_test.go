@@ -141,3 +141,30 @@ func TestLeastLoadedNoneAvailable(t *testing.T) {
 	wm.AddWorker("http://127.0.0.1:0", "")
 	c.Assert(wm.LeastLoaded(), qt.IsNil)
 }
+
+func TestWorkerIDAndRemoval(t *testing.T) {
+	c := qt.New(t)
+	wm := NewWorkerManager(nil)
+
+	w := wm.AddWorker("http://a", "alpha")
+	c.Assert(w.ID, qt.Equals, WorkerID("http://a"))
+	c.Assert(w.ID, qt.HasLen, 16)
+	c.Assert(WorkerID("http://b"), qt.Not(qt.Equals), w.ID)
+	c.Assert(w.Info(nil).ID, qt.Equals, w.ID)
+
+	got, ok := wm.WorkerByID(w.ID)
+	c.Assert(ok, qt.IsTrue)
+	c.Assert(got, qt.Equals, w)
+	c.Assert(wm.Has(w), qt.IsTrue)
+
+	wm.RemoveWorker(w.Address)
+	_, ok = wm.WorkerByID(w.ID)
+	c.Assert(ok, qt.IsFalse)
+	c.Assert(wm.Has(w), qt.IsFalse)
+
+	// Registered again, it has the same ID but is another worker.
+	again := wm.AddWorker("http://a", "alpha")
+	c.Assert(again.ID, qt.Equals, w.ID)
+	c.Assert(wm.Has(w), qt.IsFalse)
+	c.Assert(wm.Has(again), qt.IsTrue)
+}

@@ -6,9 +6,11 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/vocdoni/davinci-fold/log"
 )
@@ -32,10 +34,13 @@ const (
 	RoleKeywarden = "keywarden"
 )
 
-// responseWriter wraps http.ResponseWriter to capture the status code.
+// responseWriter wraps http.ResponseWriter to capture the status code. The
+// logging middleware hands it to the handlers of the routes it logs; redacted
+// marks a route whose response body must not be logged.
 type responseWriter struct {
 	http.ResponseWriter
 	statusCode int
+	redacted   bool
 }
 
 func (rw *responseWriter) WriteHeader(code int) {
@@ -52,8 +57,18 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 	return rw.ResponseWriter.Write(b)
 }
 
-// loggingMiddleware provides request/response logging for debugging.
-func loggingMiddleware(maxBodyLog int) func(http.Handler) http.Handler {
+// responseLogged reports whether what is written to w may be logged: the
+// logging middleware is on (not DisabledLogging, debug level) and the route is
+// not redacted.
+func responseLogged(w http.ResponseWriter) bool {
+	rw, ok := w.(*responseWriter)
+	return ok && !rw.redacted
+}
+
+// loggingMiddleware provides request/response logging for debugging. Headers
+// are never logged, and neither are the bodies of the requests redacted
+// reports (and of their responses, see httpWriteJSON).
+func loggingMiddleware(maxBodyLog int, redacted func(*http.Request) bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if DisabledLogging || log.Level() != log.LogLevelDebug {
@@ -61,8 +76,11 @@ func loggingMiddleware(maxBodyLog int) func(http.Handler) http.Handler {
 				return
 			}
 			start := time.Now()
+			redact := redacted(r)
 			var bodyStr string
-			if r.Body != nil && r.ContentLength > 0 {
+			if redact {
+				bodyStr = "(redacted)"
+			} else if r.Body != nil && r.ContentLength > 0 {
 				bodyBytes, err := io.ReadAll(r.Body)
 				if err != nil {
 					log.Error(err)
@@ -78,7 +96,7 @@ func loggingMiddleware(maxBodyLog int) func(http.Handler) http.Handler {
 					bodyStr = strings.ReplaceAll(bodyStr, "\"", "")
 				}
 			}
-			wrapped := &responseWriter{ResponseWriter: w}
+			wrapped := &responseWriter{ResponseWriter: w, redacted: redact}
 			log.Debugw("api request", "method", r.Method, "url", r.URL.String(), "body", bodyStr)
 			next.ServeHTTP(wrapped, r)
 			log.Debugw("api response",
@@ -88,9 +106,24 @@ func loggingMiddleware(maxBodyLog int) func(http.Handler) http.Handler {
 	}
 }
 
-// jwtAuth returns middleware enforcing a valid HMAC-signed JWT whose "role"
-// claim is one of allowedRoles. The subject and role are stored in the request
-// context for downstream handlers and the audit log.
+// redactedRoute reports whether the bodies of r must not be logged: it is
+// routed to one of LogRedactedRoutes, or to no route at all, so a secret sent
+// to a mistyped path is not logged either. It matches the path the router
+// matches.
+func (a *API) redactedRoute(r *http.Request) bool {
+	path := r.URL.RawPath
+	if path == "" {
+		path = r.URL.Path
+	}
+	pattern := a.router.Find(chi.NewRouteContext(), r.Method, path)
+	return pattern == "" || slices.Contains(LogRedactedRoutes, r.Method+" "+pattern)
+}
+
+// jwtAuth returns middleware enforcing a valid HMAC-signed JWT with an expiry
+// ("exp") whose "role" claim is one of allowedRoles: a missing, malformed,
+// expired or never-expiring token is ErrInvalidToken (401), a valid token of
+// another role ErrUnauthorized (403). The subject and role are stored in the
+// request context for downstream handlers and the audit log.
 func (a *API) jwtAuth(allowedRoles ...string) func(http.Handler) http.Handler {
 	allowed := make(map[string]bool, len(allowedRoles))
 	for _, role := range allowedRoles {
@@ -100,7 +133,7 @@ func (a *API) jwtAuth(allowedRoles ...string) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			raw := bearerToken(r)
 			if raw == "" {
-				ErrUnauthorized.With("missing bearer token").Write(w)
+				ErrInvalidToken.With("missing bearer token").Write(w)
 				return
 			}
 			claims := jwt.MapClaims{}
@@ -112,6 +145,10 @@ func (a *API) jwtAuth(allowedRoles ...string) func(http.Handler) http.Handler {
 			})
 			if err != nil || !token.Valid {
 				ErrInvalidToken.Write(w)
+				return
+			}
+			if !claims.VerifyExpiresAt(time.Now().Unix(), true) {
+				ErrInvalidToken.With("the token must carry an exp claim").Write(w)
 				return
 			}
 			role, _ := claims["role"].(string)

@@ -7,23 +7,25 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 
+	"github.com/vocdoni/davinci-fold/log"
 	"github.com/vocdoni/davinci-fold/types"
 )
 
 // SubmitVote validates, de-duplicates and persists a self-authenticating vote,
 // appending it to the election's ordered log and sealing a batch once the
-// pending buffer is full. Returns the persisted vote.
+// pending buffer is full. Returns the persisted vote. A rejected vote's error
+// wraps one of the Err* reasons.
 func (e *Engine) SubmitVote(id types.ElectionID, sub *VoteSubmission) (*types.Vote, error) {
-	rt, ok := e.runtime(id)
-	if !ok {
-		return nil, fmt.Errorf("unknown election %s", id.String())
-	}
 	el, err := e.store.Election(id)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %s", ErrElectionNotFound, id)
 	}
 	if el.Status != types.StatusActive {
-		return nil, fmt.Errorf("election %s not accepting votes (status %s)", id.String(), el.Status)
+		return nil, fmt.Errorf("%w: status %s", ErrNotAcceptingVotes, el.Status)
+	}
+	rt, ok := e.runtime(id)
+	if !ok {
+		return nil, fmt.Errorf("election %s not loaded", id)
 	}
 
 	voteID := types.VoteID(sub.VoteID)
@@ -31,30 +33,30 @@ func (e *Engine) SubmitVote(id types.ElectionID, sub *VoteSubmission) (*types.Vo
 	// Per-voteID in-flight + replay dedup. The lock is acquired atomically so two
 	// concurrent submissions of the same voteID cannot both proceed.
 	if !e.store.LockVoteID(voteID) {
-		return nil, fmt.Errorf("vote already being processed")
+		return nil, fmt.Errorf("%w: vote %s is being processed", ErrVoteAlreadySubmitted, voteID)
 	}
 	defer e.store.ReleaseVoteID(voteID)
 	if e.store.VoteExists(id, voteID) {
-		return nil, fmt.Errorf("duplicate vote")
+		return nil, fmt.Errorf("%w: duplicate vote %s", ErrVoteAlreadySubmitted, voteID)
 	}
 
 	// Per-(election,address) exclusivity for the duration of ingest, so two
 	// concurrent ballots from the same voter cannot race.
 	addr := new(big.Int).SetBytes(sub.Address)
 	if !e.store.LockAddress(id, addr) {
-		return nil, fmt.Errorf("a vote from this address is already in progress")
+		return nil, fmt.Errorf("%w: a vote from this address is being processed", ErrVoteAlreadySubmitted)
 	}
 	defer e.store.ReleaseAddress(id, addr)
 
 	bundle, err := e.validator.Validate(rt.rules, sub)
 	if err != nil {
-		return nil, fmt.Errorf("invalid vote: %w", err)
+		return nil, err
 	}
 	// The validator checked that the census leaf binds sub.Address, so this
 	// is the slot of the submitting voter.
 	slot, err := bundle.Census.SlotKey()
 	if err != nil {
-		return nil, fmt.Errorf("invalid vote: %w", err)
+		return nil, fmt.Errorf("%w: slot: %w", ErrInvalidCensusProof, err)
 	}
 
 	payload, err := cbor.Marshal(bundle)
@@ -71,16 +73,26 @@ func (e *Engine) SubmitVote(id types.ElectionID, sub *VoteSubmission) (*types.Vo
 		Payload:     payload,
 		SubmittedAt: time.Now(),
 	}
+
+	// The status is checked again under rt.mu, which status changes hold: a
+	// vote is either in the pending buffer before the election is paused,
+	// ended or canceled, or rejected.
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if el, err = e.store.Election(id); err != nil {
+		return nil, fmt.Errorf("load election: %w", err)
+	}
+	if el.Status != types.StatusActive {
+		return nil, fmt.Errorf("%w: status %s", ErrNotAcceptingVotes, el.Status)
+	}
 	if err := e.store.AddVote(id, v); err != nil {
 		return nil, fmt.Errorf("persist vote: %w", err)
 	}
-
-	rt.mu.Lock()
 	rt.pending = append(rt.pending, v)
-	err = e.sealFullLocked(rt)
-	rt.mu.Unlock()
-	if err != nil {
-		return nil, fmt.Errorf("seal batch: %w", err)
+	// The vote is accepted: a batch that fails to seal now is sealed again
+	// by the monitor.
+	if err := e.sealFullLocked(rt); err != nil {
+		log.Warnw("failed to seal batch", "election", id.String(), "error", err.Error())
 	}
 
 	e.audit("voter", "voter", "submit_vote", id)

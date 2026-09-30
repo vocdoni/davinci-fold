@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/vocdoni/davinci-fold/api"
 	"github.com/vocdoni/davinci-fold/log"
 	"github.com/vocdoni/davinci-fold/service"
 	"github.com/vocdoni/davinci-fold/storage"
@@ -30,6 +31,7 @@ func main() {
 
 	log.Init(cfg.Log.Level, cfg.Log.Output, nil)
 	log.Infow("starting davinci-fold", "version", Version)
+	api.DisabledLogging = cfg.Log.DisableAPI
 
 	if err := validateConfig(cfg); err != nil {
 		log.Fatalf("Invalid configuration: %v", err)

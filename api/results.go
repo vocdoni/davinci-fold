@@ -27,7 +27,9 @@ func (a *API) encryptedResults(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// decryptionKey receives the results decryption key and triggers finalize.
+// decryptionKey receives the results decryption key, checks it and starts the
+// finalize, answering 202 with the election (finalizing). The election's
+// status then tells how the finalize ends. Neither body is logged.
 // POST /elections/{id}/decryption-key (keywarden)
 func (a *API) decryptionKey(w http.ResponseWriter, r *http.Request) {
 	subject := subjectFromContext(r.Context())
@@ -46,12 +48,16 @@ func (a *API) decryptionKey(w http.ResponseWriter, r *http.Request) {
 		ErrMalformedParam.With("key must be 0x big-endian hex").Write(w)
 		return
 	}
-	res, err := a.engine.SubmitDecryptionKey(subject, id, key)
-	if err != nil {
-		ErrResultsNotReady.WithErr(err).Write(w)
+	if err := a.engine.SubmitDecryptionKey(subject, id, key); err != nil {
+		engineError(err).Write(w)
 		return
 	}
-	httpWriteJSON(w, resultsResponse(res))
+	el, err := a.engine.Election(id)
+	if err != nil {
+		ErrGenericInternalServerError.WithErr(err).Write(w)
+		return
+	}
+	httpWriteJSONStatus(w, http.StatusAccepted, electionResponse(el))
 }
 
 // results returns the final tally and PLONK snark. GET /elections/{id}/results

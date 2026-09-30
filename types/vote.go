@@ -11,7 +11,10 @@ type VoteID []byte
 // String returns the hex encoding of the vote ID.
 func (v VoteID) String() string { return hex.EncodeToString(v) }
 
-// VoteStatus tracks a vote through the ingest → batch → fold pipeline.
+// VoteStatus tracks a vote through the ingest → batch → fold pipeline. A
+// vote's status only moves forward, in the order of the values; error ends
+// any vote that is not settled. The values are persisted: never renumber
+// them.
 type VoteStatus uint8
 
 const (
@@ -21,11 +24,19 @@ const (
 	VoteStatusBatched
 	// VoteStatusFolded: its batch STARK has been folded into the chain.
 	VoteStatusFolded
-	// VoteStatusSettled: included in a finalized election.
+	// VoteStatusSettled: its election's final proof is verified and the
+	// results are stored. Final.
 	VoteStatusSettled
-	// VoteStatusError: failed validation or proving.
+	// VoteStatusError: the state refused it at seal time, or its election was
+	// canceled. Final.
 	VoteStatusError
 )
+
+// Final reports whether a vote in status s never changes status again.
+func (s VoteStatus) Final() bool { return s == VoteStatusSettled || s == VoteStatusError }
+
+// CanMoveTo reports whether a vote in status s may move to next.
+func (s VoteStatus) CanMoveTo(next VoteStatus) bool { return !s.Final() && next > s }
 
 // String returns the lowercase status name used in the API and logs.
 func (s VoteStatus) String() string {

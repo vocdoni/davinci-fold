@@ -27,6 +27,8 @@ var (
 	ErrResultsNotReady           = Error{Code: 40014, HTTPstatus: http.StatusConflict, Err: fmt.Errorf("results not ready")}
 	ErrWorkerNotFound            = Error{Code: 40015, HTTPstatus: http.StatusNotFound, Err: fmt.Errorf("worker not found")}
 	ErrMalformedWorkerInfo       = Error{Code: 40016, HTTPstatus: http.StatusBadRequest, Err: fmt.Errorf("malformed worker info")}
+	ErrInvalidStatusTransition   = Error{Code: 40017, HTTPstatus: http.StatusConflict, Err: fmt.Errorf("invalid election status transition")}
+	ErrInvalidDecryptionKey      = Error{Code: 40018, HTTPstatus: http.StatusBadRequest, Err: fmt.Errorf("invalid decryption key")}
 
 	ErrMarshalingServerJSONFailed = Error{Code: 50001, HTTPstatus: http.StatusInternalServerError, Err: fmt.Errorf("marshaling (server-side) JSON failed")}
 	ErrGenericInternalServerError = Error{Code: 50002, HTTPstatus: http.StatusInternalServerError, Err: fmt.Errorf("internal server error")}

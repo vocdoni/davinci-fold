@@ -6,10 +6,13 @@
 go test ./...
 ```
 
-Unit tests need no provers, GPU or network. They cover storage and restart recovery, the
-prover pool against a fake `/health` server, the API handlers with JWT checks, the election
-engine (ingest checks, census proofs, sealing of overwrites, lifecycle and restore, using
-synthetic ballots) and the keywarden client. Set `LOG_LEVEL=debug` to see the service logs.
+Unit tests need no provers, GPU or external network. They cover storage and restart recovery,
+the prover pool against a fake `/health` server, the API handlers (JWT checks, error codes,
+status changes, the decryption-key call, log redaction), the election engine (ingest checks,
+census proofs, sealing of overwrites and of votes the state refuses, status changes, the
+background finalize, restore, using synthetic ballots), the scheduler against fake provers
+(fold cadence and checkpoints, cancel, prover removal) and the keywarden client. Set
+`LOG_LEVEL=debug` to see the service logs.
 
 ## Integration tests
 
@@ -19,8 +22,8 @@ anything other than `false`; otherwise it exits at once, which keeps `go test ./
 
 | Test | Needs | Checks |
 |---|---|---|
-| `TestAPILifecycle`, `TestAPIAuthRejections`, `TestWorkerRegistration` | nothing | HTTP surface and token checks. |
-| `TestAdversarialIngest` | CPU | Real Groth16 ballots; every tampered submission (a non-member's, another ballot under a valid proof, a padded field, encodings the provers cannot parse) is rejected at ingest, and a clean one is accepted and stored re-encoded. |
+| `TestAPILifecycle`, `TestAPIAuthRejections`, `TestAPIElectionStatus`, `TestWorkerRegistration` | nothing | HTTP surface, token checks, status changes and prover removal. |
+| `TestAdversarialIngest` | CPU | Real Groth16 ballots; every tampered submission (a non-member's, another ballot under a valid proof, a padded field, encodings the provers cannot parse) is rejected at ingest with its reason, and a clean one is accepted and stored re-encoded. |
 | `TestIngestCensusWeight` | CPU | A member whose census weight differs from the one its ballot proof committed to is rejected. |
 | `TestBallotVKPerElection` | CPU | Ballot proofs are checked against the election's own `vk`: a proof valid only under another key is rejected. |
 | `TestScatterGatherE2E` | 1 prover | A full election with overwrites, from ballots to results, checking the tally and verifying the final PLONK on a simulated EVM. |

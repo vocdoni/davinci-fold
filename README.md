@@ -81,18 +81,20 @@ them all.
 | `--worker.pollPeriod` | `DAVINCIFOLD_WORKER_POLLPERIOD` | `10s` | Prover health-check interval. |
 | `--log.level`, `-l` | `DAVINCIFOLD_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` or `fatal`. |
 | `--log.output`, `-o` | `DAVINCIFOLD_LOG_OUTPUT` | `stdout` | `stdout`, `stderr` or a file path. |
+| `--log.disableAPI` | `DAVINCIFOLD_LOG_DISABLEAPI` | `false` | Do not log API requests and responses. |
 | `--datadir`, `-d` | `DAVINCIFOLD_DATADIR` | `~/.davinci-fold` | Database directory. |
 
-An election can override the batch size and fold cadence when it is created. Debug logging
-prints request bodies, including the decryption key, so keep it off in production.
+An election can override the batch size and fold cadence when it is created. At `debug` level
+the API logs request and response bodies, except for the decryption-key call, and never the
+`Authorization` header.
 
 ### Authentication
 
 Voting and the read endpoints are public, except the encrypted tally. Creating elections and
 registering provers needs an `admin` token; fetching the encrypted tally and submitting the
 decryption key needs a `keywarden` token. Tokens are HS256 JWTs signed with the JWT secret,
-carrying `role`, `sub` (recorded in the audit log) and `exp`. Any JWT library can mint them;
-from a shell:
+carrying `role`, `sub` (recorded in the audit log) and `exp`, which is required. Any JWT
+library can mint them; from a shell:
 
 ```sh
 b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
@@ -145,17 +147,21 @@ KEYWARDEN_JWT=$(mint keywarden keywarden-1)
    own proofs). The body format is in [docs/api.md](docs/api.md#submit-a-vote).
 
 5. At `endTime` the election moves to `ended`, the remaining batches are folded and the status
-   becomes `decrypting`. Nothing needs to be called, but an election created without `endTime`
-   never ends.
+   becomes `decrypting`. To end it earlier, or if it has no `endTime`, ask for it; the same call
+   takes `paused`, `active` and `canceled`:
 
-6. Release the key. Finalize takes several minutes on the fold worker; `test-keywarden` stops
-   waiting after 30 seconds, but the orchestrator carries on, so follow the election status
-   until it reads `results`.
+   ```sh
+   curl -X POST http://127.0.0.1:8888/elections/$ELECTION/status \
+     -H "Authorization: Bearer $ADMIN_JWT" -H 'Content-Type: application/json' -d '{"status":"ended"}'
+   ```
+
+6. Release the key. davinci-fold checks it and finalizes in the background, which takes several
+   minutes on the fold worker. `test-keywarden` submits the key, follows the election until it
+   has results (at most `--timeout`, 30 minutes by default) and prints them.
 
    ```sh
    ./test-keywarden --mode=finalize --keyfile=keywarden-key.json \
-     --orchestrator=http://127.0.0.1:8888 --token="$KEYWARDEN_JWT" --election="$ELECTION"
-   curl http://127.0.0.1:8888/elections/$ELECTION
+     --token="$KEYWARDEN_JWT" --election="$ELECTION"
    ```
 
 7. Fetch the tally and the PLONK proof:
@@ -171,13 +177,15 @@ KEYWARDEN_JWT=$(mint keywarden keywarden-1)
 | GET | `/ping`, `/info` | | Liveness; version, defaults and counts. |
 | POST, GET | `/elections` | admin (POST) | Create or list elections. |
 | GET | `/elections/{id}` | | Election status. |
+| POST | `/elections/{id}/status` | admin | Pause, resume, end or cancel an election. |
 | POST | `/elections/{id}/votes` | | Submit a ballot. |
 | GET | `/elections/{id}/votes/{voteID}` | | Vote status. |
 | GET | `/elections/{id}/encrypted-results` | keywarden | Encrypted tally, once `decrypting`. |
-| POST | `/elections/{id}/decryption-key` | keywarden | Submit the key and run finalize. |
+| POST | `/elections/{id}/decryption-key` | keywarden | Submit the key; finalize runs in the background. |
 | GET | `/elections/{id}/results` | | Tally and PLONK proof. |
 | GET | `/workers` | | Prover pool. |
 | POST | `/workers/register` | admin | Add a prover. |
+| DELETE | `/workers/{id}` | admin | Remove a prover. |
 
 Request and response formats and error codes are in [docs/api.md](docs/api.md).
 

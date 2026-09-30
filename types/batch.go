@@ -24,6 +24,10 @@ type BatchInput struct {
 	SealedAt   time.Time `cbor:"sealedAt"`
 }
 
+// FoldCheckpointVersion is the FoldCheckpoint format the orchestrator writes.
+// Version 0 checkpoints stored the fold count in BatchesFolded.
+const FoldCheckpointVersion = 1
+
 // FoldCheckpoint is the persisted head of an election's fold chain. After a
 // crash the orchestrator resumes folding from here.
 type FoldCheckpoint struct {
@@ -34,15 +38,19 @@ type FoldCheckpoint struct {
 	// LastFoldJob is the fold job ID on the fold worker, chained as
 	// prev_fold_job into the next fold.
 	LastFoldJob string `cbor:"lastFoldJob,omitempty"`
-	// StateRoot is the state root the fold chain attests up to.
+	// StateRoot is the state root the fold chain attests up to: the new root
+	// of the last batch folded.
 	StateRoot string `cbor:"stateRoot"`
-	// BatchesFolded is the count of batch STARKs folded so far.
+	// BatchesFolded is the number of batch STARKs folded so far (the fold
+	// count in version 0 checkpoints).
 	BatchesFolded uint64 `cbor:"batchesFolded"`
 	// AggVK is the aggregator program_vk bound by the genesis fold (0x BE hex).
 	AggVK string `cbor:"aggVK,omitempty"`
 	// BatchVK is the batch circuit program_vk learned at runtime (0x BE hex).
 	BatchVK   string    `cbor:"batchVK,omitempty"`
 	UpdatedAt time.Time `cbor:"updatedAt"`
+	// Version is the checkpoint format, FoldCheckpointVersion when written.
+	Version uint8 `cbor:"version,omitempty"`
 }
 
 // Results is the final tally and on-chain PLONK for a finalized election.

@@ -21,7 +21,7 @@ func (a *API) newVote(w http.ResponseWriter, r *http.Request) {
 	}
 	v, err := a.engine.SubmitVote(id, &sub)
 	if err != nil {
-		ErrInvalidBallotProof.WithErr(err).Write(w)
+		engineError(err).Write(w)
 		return
 	}
 	httpWriteJSON(w, &VoteReceiptResponse{

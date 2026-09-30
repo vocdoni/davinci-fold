@@ -72,26 +72,26 @@ type Validator interface {
 // proof.
 func checkVote(rules *voteRules, sub *VoteSubmission) (*elgamal.Ballot, *big.Int, davinci.CensusProof, error) {
 	if len(sub.Address) != common.AddressLength {
-		return nil, nil, davinci.CensusProof{}, fmt.Errorf("address must be %d bytes", common.AddressLength)
+		return nil, nil, davinci.CensusProof{}, fmt.Errorf("%w: address must be %d bytes", ErrMalformedVote, common.AddressLength)
 	}
 	// One encoding per vote-ID key, so the duplicate check on the stored ID is
 	// the state tree's: a key inserted twice fails the batch.
 	if len(sub.VoteID) != 8 {
-		return nil, nil, davinci.CensusProof{}, fmt.Errorf("vote_id must be 8 bytes, got %d", len(sub.VoteID))
+		return nil, nil, davinci.CensusProof{}, fmt.Errorf("%w: vote_id must be 8 bytes, got %d", ErrMalformedVote, len(sub.VoteID))
 	}
 	if binary.BigEndian.Uint64(sub.VoteID) != sub.VoteIDKey {
-		return nil, nil, davinci.CensusProof{}, fmt.Errorf("vote_id_key does not match vote_id")
+		return nil, nil, davinci.CensusProof{}, fmt.Errorf("%w: vote_id_key does not match vote_id", ErrMalformedVote)
 	}
 	if !vtypes.VoteID(sub.VoteIDKey).Valid() {
-		return nil, nil, davinci.CensusProof{}, fmt.Errorf("vote ID %#x outside the vote-ID namespace", sub.VoteIDKey)
+		return nil, nil, davinci.CensusProof{}, fmt.Errorf("%w: vote ID %#x outside the vote-ID namespace", ErrMalformedVote, sub.VoteIDKey)
 	}
 	ballot, err := checkBallot(rules, sub.Ballot)
 	if err != nil {
-		return nil, nil, davinci.CensusProof{}, err
+		return nil, nil, davinci.CensusProof{}, fmt.Errorf("%w: %w", ErrMalformedVote, err)
 	}
 	weight, census, err := verifyCensusProof(rules.cfg.CensusRoot, sub.Address, sub.Census)
 	if err != nil {
-		return nil, nil, davinci.CensusProof{}, err
+		return nil, nil, davinci.CensusProof{}, fmt.Errorf("%w: %w", ErrInvalidCensusProof, err)
 	}
 	return ballot, weight, census, nil
 }
@@ -140,13 +140,13 @@ type structuralValidator struct{}
 
 func (structuralValidator) Validate(rules *voteRules, sub *VoteSubmission) (*voteProofBundle, error) {
 	if len(sub.Proof) == 0 {
-		return nil, fmt.Errorf("missing ballot proof")
+		return nil, fmt.Errorf("%w: missing proof", ErrInvalidBallotProof)
 	}
 	if len(sub.PublicInputs) == 0 {
-		return nil, fmt.Errorf("missing public_inputs")
+		return nil, fmt.Errorf("%w: missing public_inputs", ErrInvalidBallotProof)
 	}
 	if len(sub.Sig) == 0 {
-		return nil, fmt.Errorf("missing signature")
+		return nil, fmt.Errorf("%w: missing signature", ErrInvalidSignature)
 	}
 	_, _, census, err := checkVote(rules, sub)
 	if err != nil {
@@ -189,10 +189,10 @@ type cryptoValidator struct{}
 
 func (cryptoValidator) Validate(rules *voteRules, sub *VoteSubmission) (*voteProofBundle, error) {
 	if len(sub.Proof) == 0 {
-		return nil, fmt.Errorf("missing ballot proof")
+		return nil, fmt.Errorf("%w: missing proof", ErrInvalidBallotProof)
 	}
 	if len(sub.Sig) == 0 {
-		return nil, fmt.Errorf("missing signature")
+		return nil, fmt.Errorf("%w: missing signature", ErrInvalidSignature)
 	}
 	ballot, weight, census, err := checkVote(rules, sub)
 	if err != nil {
@@ -204,14 +204,14 @@ func (cryptoValidator) Validate(rules *voteRules, sub *VoteSubmission) (*votePro
 	// another.
 	pubs, pubVec, err := parsePublicInputs(sub.PublicInputs)
 	if err != nil {
-		return nil, fmt.Errorf("public_inputs: %w", err)
+		return nil, fmt.Errorf("%w: public_inputs: %w", ErrInvalidBallotProof, err)
 	}
 	address := new(big.Int).SetBytes(sub.Address)
 	if pubs[0].Cmp(address) != 0 {
-		return nil, fmt.Errorf("public_inputs address does not match submission address")
+		return nil, fmt.Errorf("%w: public_inputs address does not match submission address", ErrInvalidBallotProof)
 	}
 	if !pubs[1].IsUint64() || pubs[1].Uint64() != sub.VoteIDKey {
-		return nil, fmt.Errorf("public_inputs vote ID does not match submission vote ID")
+		return nil, fmt.Errorf("%w: public_inputs vote ID does not match submission vote ID", ErrInvalidBallotProof)
 	}
 	// The inputs hash commits the proof to the election (process ID, ballot
 	// mode, encryption key), the ballot as submitted and the census weight.
@@ -219,21 +219,22 @@ func (cryptoValidator) Validate(rules *voteRules, sub *VoteSubmission) (*votePro
 	inputsHash, err := ballotproof.BallotInputsHashGnark(rules.processID, rules.ballotMode, rules.cfg.EncKey,
 		vtypes.HexBytes(sub.Address), vtypes.VoteID(sub.VoteIDKey), ballot, (*vtypes.BigInt)(weight))
 	if err != nil {
-		return nil, fmt.Errorf("inputs hash: %w", err)
+		return nil, fmt.Errorf("%w: inputs hash: %w", ErrInvalidBallotProof, err)
 	}
 	if pubs[2].Cmp(inputsHash.MathBigInt()) != 0 {
-		return nil, fmt.Errorf("public_inputs inputs hash does not match the ballot, election and census weight")
+		return nil, fmt.Errorf("%w: public_inputs inputs hash does not match the ballot, election and census weight",
+			ErrInvalidBallotProof)
 	}
 
 	// ECDSA signature: recover the signer from (R,S,V) over the padded vote ID
 	// and require it to match the submitted address.
 	sig, err := parseVoteSig(sub.Sig)
 	if err != nil {
-		return nil, fmt.Errorf("signature: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidSignature, err)
 	}
 	sigOk, pubKey := sig.Verify(crypto.PadToSign(sub.VoteID), common.BytesToAddress(sub.Address))
 	if !sigOk {
-		return nil, fmt.Errorf("signature verification failed")
+		return nil, fmt.Errorf("%w: it does not recover to the voter's address", ErrInvalidSignature)
 	}
 
 	// Groth16 ballot proof against the election's ballot VK (the one the
@@ -241,10 +242,10 @@ func (cryptoValidator) Validate(rules *voteRules, sub *VoteSubmission) (*votePro
 	// poisoning the batch STARK at prove time.
 	proof, proofJSON, err := parseBallotProof(sub.Proof)
 	if err != nil {
-		return nil, fmt.Errorf("ballot proof: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidBallotProof, err)
 	}
 	if err := groth16.Verify(proof, rules.ballotVK, pubVec); err != nil {
-		return nil, fmt.Errorf("ballot proof: invalid proof")
+		return nil, fmt.Errorf("%w: it does not verify under the election's vk", ErrInvalidBallotProof)
 	}
 
 	rsv := sig.Bytes()

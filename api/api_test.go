@@ -3,8 +3,11 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +18,7 @@ import (
 
 	"github.com/vocdoni/davinci-fold/orchestrator"
 	"github.com/vocdoni/davinci-fold/storage"
+	"github.com/vocdoni/davinci-fold/workers"
 	davinci "github.com/vocdoni/davinci-zkvm/go-sdk"
 	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/circuits/ballotproof"
 	bjjgnark "github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/crypto/ecc/bjj_gnark"
@@ -28,21 +32,78 @@ const testJWTSecret = "test-secret"
 // but without starting an HTTP server, so handlers can be exercised in-process.
 func newTestAPI(t *testing.T) *API {
 	t.Helper()
+	a, _ := newTestAPIWithStore(t)
+	return a
+}
+
+// newTestAPIWithStore is newTestAPI returning the engine's storage too. The
+// engine has a worker pool without workers: it can start a finalize, which
+// fails for want of a prover.
+func newTestAPIWithStore(t *testing.T) (*API, *storage.Storage) {
+	t.Helper()
 	database, err := metadb.New(db.TypeInMem, "")
 	qt.Assert(t, err, qt.IsNil)
 	store := storage.New(database)
-	engine, err := orchestrator.NewEngine(store, orchestrator.Options{BatchSize: 2})
+	pool := workers.NewWorkerManager(nil)
+	engine, err := orchestrator.NewEngine(store, orchestrator.Options{BatchSize: 2, FoldEvery: 4, Pool: pool})
 	qt.Assert(t, err, qt.IsNil)
 	t.Cleanup(engine.Stop)
 
 	a := &API{
 		engine:    engine,
+		pool:      pool,
 		jwtSecret: []byte(testJWTSecret),
 		batchSize: 64,
 		foldEvery: 4,
 	}
 	a.initRouter()
-	return a
+	return a, store
+}
+
+// do serves a request with an optional bearer token and JSON body.
+func do(t *testing.T, a *API, method, path, token string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	var rdr io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		qt.Assert(t, err, qt.IsNil)
+		rdr = bytes.NewReader(b)
+	}
+	req := httptest.NewRequest(method, path, rdr)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	rec := httptest.NewRecorder()
+	a.Router().ServeHTTP(rec, req)
+	return rec
+}
+
+// newRequest builds a request with an optional Authorization header and body.
+func newRequest(method, path, authHeader, body string) *http.Request {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+	return req
+}
+
+// serve runs req through the API's router.
+func serve(a *API, req *http.Request) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	a.Router().ServeHTTP(rec, req)
+	return rec
+}
+
+// assertError checks rec is an error response with the HTTP status and code
+// of want.
+func assertError(t *testing.T, rec *httptest.ResponseRecorder, want Error) {
+	t.Helper()
+	qt.Assert(t, rec.Code, qt.Equals, want.HTTPstatus, qt.Commentf("body: %s", rec.Body.String()))
+	var got struct {
+		Code int `json:"code"`
+	}
+	qt.Assert(t, json.Unmarshal(rec.Body.Bytes(), &got), qt.IsNil)
+	qt.Assert(t, got.Code, qt.Equals, want.Code, qt.Commentf("body: %s", rec.Body.String()))
 }
 
 // mintToken signs a JWT for the given role and subject using the test secret.
@@ -84,14 +145,8 @@ func TestInfo(t *testing.T) {
 // TestCreateElectionRequiresAuth verifies the admin route rejects unauthenticated
 // requests before reaching the handler.
 func TestCreateElectionRequiresAuth(t *testing.T) {
-	c := qt.New(t)
 	a := newTestAPI(t)
-
-	req := httptest.NewRequest(http.MethodPost, ElectionsEndpoint, nil)
-	rec := httptest.NewRecorder()
-	a.Router().ServeHTTP(rec, req)
-
-	c.Assert(rec.Code, qt.Equals, http.StatusForbidden)
+	assertError(t, do(t, a, http.MethodPost, ElectionsEndpoint, "", nil), ErrInvalidToken)
 }
 
 // TestCreateElectionWrongRole verifies a keywarden token cannot create elections.
@@ -110,7 +165,14 @@ func TestCreateElectionWrongRole(t *testing.T) {
 // testElectionBody builds a valid create-election request bound to a fresh key.
 func testElectionBody(t *testing.T, processID string) *ElectionCreateRequest {
 	t.Helper()
-	pub, _, err := elgamal.GenerateKey(bjjgnark.New())
+	body, _ := testElectionBodyWithKey(t, processID)
+	return body
+}
+
+// testElectionBodyWithKey is testElectionBody returning the private key too.
+func testElectionBodyWithKey(t *testing.T, processID string) (*ElectionCreateRequest, *big.Int) {
+	t.Helper()
+	pub, priv, err := elgamal.GenerateKey(bjjgnark.New())
 	qt.Assert(t, err, qt.IsNil)
 	rx, ry := pub.(*bjjgnark.BJJ).Point()
 	bm, err := spectestutil.FixedBallotMode().Pack()
@@ -126,7 +188,7 @@ func testElectionBody(t *testing.T, processID string) *ElectionCreateRequest {
 		BatchSize:    2,
 		FoldEvery:    4,
 		EndTime:      time.Now().Add(time.Hour),
-	}
+	}, priv
 }
 
 // TestCreateAndGetElection drives the admin create path and the public read path.

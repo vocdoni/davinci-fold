@@ -41,6 +41,7 @@ func (e Error) Error() string {
 }
 
 // Write serializes a JSON message using Error.Err and Error.Code and writes it.
+// The message is logged only where the logging middleware logs responses.
 func (e Error) Write(w http.ResponseWriter) {
 	msg, err := json.Marshal(e)
 	if err != nil {
@@ -48,7 +49,7 @@ func (e Error) Write(w http.ResponseWriter) {
 		http.Error(w, "marshal failed", http.StatusInternalServerError)
 		return
 	}
-	if log.Level() == log.LogLevelDebug {
+	if responseLogged(w) {
 		log.Debugw("API error response", "error", e.Error(), "code", e.Code, "httpStatus", e.HTTPstatus)
 	}
 	w.Header().Set("Content-Type", "application/json")

@@ -88,7 +88,14 @@ func packedBallotMode(t *testing.T) string {
 // testElection builds an election config bound to a fresh ElGamal key.
 func testElection(t *testing.T, id byte, endTime time.Time) (*types.Election, *bjjgnark.BJJ) {
 	t.Helper()
-	pub, _, err := elgamal.GenerateKey(bjjgnark.New())
+	el, encKey, _ := testElectionWithKey(t, id, endTime)
+	return el, encKey
+}
+
+// testElectionWithKey is testElection returning the private key too.
+func testElectionWithKey(t *testing.T, id byte, endTime time.Time) (*types.Election, *bjjgnark.BJJ, *big.Int) {
+	t.Helper()
+	pub, priv, err := elgamal.GenerateKey(bjjgnark.New())
 	qt.Assert(t, err, qt.IsNil)
 	encKey := pub.(*bjjgnark.BJJ)
 	rx, ry := encKey.Point()
@@ -107,7 +114,7 @@ func testElection(t *testing.T, id byte, endTime time.Time) (*types.Election, *b
 			// Real VK: the BallotVKHash config leaf is derived from it at genesis.
 			VK: ballotproof.CircomVerificationKey,
 		},
-	}, encKey
+	}, encKey, priv
 }
 
 // makeSub builds a valid vote submission for voter i under encKey.
@@ -277,7 +284,7 @@ func TestFinalizeLifecycleGating(t *testing.T) {
 	e, s := newTestEngine(t) // ingest-only: no scheduler
 	defer e.Stop()
 
-	el, _ := testElection(t, 0x06, time.Now().Add(time.Hour))
+	el, _, priv := testElectionWithKey(t, 0x06, time.Now().Add(time.Hour))
 	c.Assert(e.CreateElection("admin", el), qt.IsNil)
 
 	// Ciphertext is not served before the election reaches Decrypting.
@@ -285,8 +292,7 @@ func TestFinalizeLifecycleGating(t *testing.T) {
 	c.Assert(err, qt.Not(qt.IsNil))
 
 	// A decryption key is rejected while the election is still Active.
-	_, err = e.SubmitDecryptionKey("kw", el.ID, big.NewInt(7))
-	c.Assert(err, qt.Not(qt.IsNil))
+	c.Assert(e.SubmitDecryptionKey("kw", el.ID, priv), qt.ErrorIs, ErrInvalidTransition)
 
 	// Once Decrypting, the NumFields ElGamal ciphertexts (4 coords each) are served.
 	c.Assert(s.SetElectionStatus(el.ID, types.StatusDecrypting), qt.IsNil)
@@ -296,8 +302,7 @@ func TestFinalizeLifecycleGating(t *testing.T) {
 
 	// Without a scheduler the key cannot be finalized, and the status is left at
 	// Decrypting so a real keywarden could retry against a worker-backed engine.
-	_, err = e.SubmitDecryptionKey("kw", el.ID, big.NewInt(7))
-	c.Assert(err, qt.Not(qt.IsNil))
+	c.Assert(e.SubmitDecryptionKey("kw", el.ID, priv), qt.ErrorMatches, ".*no worker pool.*")
 	got, err := e.Election(el.ID)
 	c.Assert(err, qt.IsNil)
 	c.Assert(got.Status, qt.Equals, types.StatusDecrypting)
@@ -399,7 +404,7 @@ func TestOverwriteSealsInNextBatch(t *testing.T) {
 	c.Assert(err, qt.Equals, storage.ErrNotFound)
 
 	rt, _ := e.runtime(el.ID)
-	e.endElection(rt, el)
+	c.Assert(e.SetStatus("admin", el.ID, types.StatusEnded), qt.IsNil)
 
 	ids, overwrites := batchVotes(t, s, el.ID, 0)
 	c.Assert(ids, qt.DeepEquals, []string{"a0"})

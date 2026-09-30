@@ -32,25 +32,29 @@ func (s *Storage) Election(id types.ElectionID) (*types.Election, error) {
 	return &e, nil
 }
 
-// UpdateElection overwrites an existing election record (bumping UpdatedAt).
-func (s *Storage) UpdateElection(e *types.Election) error {
-	s.globalLock.Lock()
-	defer s.globalLock.Unlock()
-	e.UpdatedAt = time.Now()
-	return s.setArtifact(electionPrefix, electionKey(e.ID), e)
-}
-
-// SetElectionStatus transitions an election to a new lifecycle status.
-func (s *Storage) SetElectionStatus(id types.ElectionID, status types.Status) error {
+// UpdateElection applies updateFunc to the stored election and writes it
+// back (bumping UpdatedAt), atomically with respect to the other election
+// writes. If updateFunc fails, nothing is written and its error is returned.
+func (s *Storage) UpdateElection(id types.ElectionID, updateFunc func(*types.Election) error) error {
 	s.globalLock.Lock()
 	defer s.globalLock.Unlock()
 	var e types.Election
 	if err := s.getArtifact(electionPrefix, electionKey(id), &e); err != nil {
 		return err
 	}
-	e.Status = status
+	if err := updateFunc(&e); err != nil {
+		return err
+	}
 	e.UpdatedAt = time.Now()
 	return s.setArtifact(electionPrefix, electionKey(id), &e)
+}
+
+// SetElectionStatus transitions an election to a new lifecycle status.
+func (s *Storage) SetElectionStatus(id types.ElectionID, status types.Status) error {
+	return s.UpdateElection(id, func(e *types.Election) error {
+		e.Status = status
+		return nil
+	})
 }
 
 // ListElections returns every persisted election.
