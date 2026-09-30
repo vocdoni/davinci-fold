@@ -7,16 +7,23 @@ checks the final result.
 
 ## Proving pipeline
 
-1. **Ingest.** A ballot is accepted only if its Groth16 ballot proof verifies against the
-   davinci-circom verification key, its public inputs match the submitted address and vote ID,
-   the voter's ECDSA signature over the vote ID recovers the submitted address, and its census
-   proof targets the election's census root. The census membership proof itself is verified
-   by the batch circuit. A vote ID is accepted once; a later ballot from the same voter lands
-   on the same state slot and overwrites the earlier one.
+1. **Ingest.** Ingest applies every check the batch circuit makes on what a voter sends,
+   because one ballot the circuit rejects fails its whole batch and blocks the election's fold
+   chain. A ballot is accepted only if its Groth16 ballot proof verifies against the
+   election's verification key; its public inputs are the submitted address, the vote ID and
+   the inputs hash recomputed from the election, the ballot and the census weight; the
+   voter's ECDSA signature over the vote ID recovers the address; its lean-IMT census proof
+   leads from a leaf that binds the address to the election's census root; and its ballot is
+   well formed (identity in the fields the ballot mode does not use, curve points in the
+   others). The proof, public inputs and signature are stored re-encoded as the provers parse
+   them. A vote ID is accepted once. The ballot slot is derived from the voter's address, so
+   a later ballot from the same voter overwrites the earlier one.
 2. **Seal.** Accepted votes wait in a per-election buffer. A batch is sealed when the buffer
-   reaches the batch size, when its oldest vote is older than `--batch.time`, or when the
-   election ends. Sealing applies the batch to the election state (ballot tree, re-encryption,
-   encrypted tally) and persists the exact prove request and the new state snapshot.
+   holds a full batch of distinct voters, when its oldest vote is older than `--batch.time`, or
+   when the election ends. The batch circuit rejects a batch that writes one slot twice, so a
+   voter's second vote waits for a later batch and the latest vote still wins. Sealing applies
+   the batch to the election state (ballot tree, re-encryption, encrypted tally) and persists
+   the exact prove request and the new state snapshot.
 3. **Prove.** Each sealed batch is sent as a STARK job to the healthy prover with the shortest
    queue. A failed job is resubmitted, up to three attempts, each to the least-loaded prover at
    that moment. Batches of one election are dispatched in sequence order, one at a time;

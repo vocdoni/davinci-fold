@@ -39,19 +39,17 @@ Returns `200` with an empty body while the service is up.
 
 | Field | Type | Description |
 |---|---|---|
-| `processID` | hex | Protocol process ID. The election ID is its bytes. |
+| `processID` | hex | Protocol process ID, at most 31 bytes. The election ID is its bytes. |
 | `ballotMode` | hex | Packed ballot mode (`spec.BallotMode.Pack()` in the davinci-zkvm Go SDK); its low byte is the number of fields, 1 to 16. |
 | `encX`, `encY` | hex | ElGamal public key, reduced twisted Edwards coordinates. |
-| `censusOrigin` | number | Census origin; `1` is a lean-IMT Merkle census. |
-| `censusRoot` | hex | Census root every vote's census proof must match. |
-| `vk` | object | Ballot-proof verification key (snarkjs JSON) from davinci-circom `v1.0.0`. |
+| `censusOrigin` | number | Census origin: `1`, `2` or `3`, a lean-IMT Merkle census. Other origins, `4` (CSP) included, are rejected. |
+| `censusRoot` | hex | Census root every vote's census proof must reach, a BN254 field element. |
+| `vk` | object | Optional. Ballot-proof verification key (snarkjs JSON, three public signals) that ingest and the provers check ballot proofs against. Defaults to the davinci-circom `v1.0.0` key. Stored re-encoded in canonical snarkjs form. |
 | `endTime` | RFC 3339 | When the election closes. Without it the election never ends. |
 | `batchSize` | number | Optional. Overrides `--batch.size`, at most 1024. |
 | `foldEvery` | number | Optional. Overrides `--fold.every`. |
 
-Hex values are big-endian with an optional `0x` prefix. Ingest verifies ballot proofs against
-the davinci-circom key built into davinci-fold, and the provers verify them against `vk`, so
-`vk` must be that same key.
+Hex values are big-endian with an optional `0x` prefix.
 
 Returns the election:
 
@@ -81,22 +79,34 @@ No token: the ballot authenticates itself. Byte fields are base64, as Go encodes
 
 | Field | Type | Description |
 |---|---|---|
-| `vote_id` | base64 | Vote identifier, big-endian. Its integer value equals `vote_id_key`. |
-| `vote_id_key` | number | The vote ID as an unsigned 64-bit integer. |
+| `vote_id` | base64 | Vote identifier: `vote_id_key` as 8 big-endian bytes. |
+| `vote_id_key` | number | The vote ID as an unsigned 64-bit integer, bit 63 set. |
 | `address` | base64 | Voter Ethereum address, 20 bytes. |
 | `ballot` | base64 | Encrypted ballot, `elgamal.Ballot.Serialize()` from the davinci-zkvm Go SDK. |
-| `proof` | object | snarkjs Groth16 proof of the ballot. |
+| `proof` | object | snarkjs Groth16 proof of the ballot: decimal coordinates, affine points (`"1"`). |
 | `public_inputs` | string[3] | Decimal public signals: address, vote ID, inputs hash. |
 | `sig` | object | `{"signature_r": hex, "signature_s": hex, "signature_v": recovery id}` |
 | `census` | object | `{"root": hex, "leaf": hex, "index": number, "siblings": [hex]}` |
 
+Ingest checks everything the batch circuit checks about a vote, so an accepted vote cannot
+make its batch fail. The inputs hash must be the Poseidon hash the ballot proof commits to,
+recomputed from the election (process ID, ballot mode, key), `address`, the vote ID, the
+submitted ballot and the weight the census leaf carries. Ballot fields past the ballot mode's
+field count must be the identity ciphertext, the others points on BabyJubJub. The proof,
+public inputs and signature are stored re-encoded as the provers parse them.
+
 `sig` is an Ethereum `personal_sign` (EIP-191) signature by `address` over the vote ID
-left-padded to 32 bytes. `census` is a lean-IMT membership proof: `index` holds the path bits
-and must have no bits set above the proof depth, which is at most 61.
+left-padded to 32 bytes; `r` and `s` are hex, `s` at most n/2, and the recovery id is 0 or 1
+(27 or 28 are accepted). `census` is a lean-IMT membership proof that must reach the
+election's `censusRoot`: `root`, `leaf` and `siblings` are 32-byte big-endian hex field
+elements, `leaf` is `address << 88 | weight` for the submitted `address`, and `index` holds the
+path bits, with no bits set above the proof depth, which is at most 61. The voter's ballot slot
+is derived from the address, so a later vote from the same address overwrites the earlier one.
 
 Returns `{"voteID": "<hex>", "status": "accepted"}`. A rejected vote returns error `40009`
-with the reason in the message: failed verification, a repeated vote ID, an election that is
-not `active` or another vote from the same address still being processed.
+with the reason in the message: failed verification (ballot proof, signature or census proof),
+a repeated vote ID, an election that is not `active` or another vote from the same address
+still being processed.
 
 ### `GET /elections/{id}/votes/{voteID}`
 

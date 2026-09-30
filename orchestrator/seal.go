@@ -14,18 +14,51 @@ import (
 	"github.com/vocdoni/davinci-zkvm/go-sdk/chain"
 )
 
-// sealLocked drains up to batchSize pending votes, applies them to the state
-// tree and persists the exact, re-drivable batch prove request plus the new
-// state snapshot. The caller must hold rt.mu.
+// nextBatch splits the pending votes into the next batch, at most size votes
+// in submission order with no two on one ballot slot, and the votes left
+// pending. The batch guest rejects a batch that writes a slot twice, so a
+// later vote for a slot already in the batch (an overwrite by the same voter)
+// waits for a following batch; per slot, votes are still applied in
+// submission order and the latest one wins.
+func nextBatch(pending []*types.Vote, size int) (batch, rest []*types.Vote) {
+	slots := make(map[uint64]struct{}, size)
+	for _, v := range pending {
+		if _, dup := slots[v.Slot]; dup || len(batch) == size {
+			rest = append(rest, v)
+			continue
+		}
+		slots[v.Slot] = struct{}{}
+		batch = append(batch, v)
+	}
+	return batch, rest
+}
+
+// sealFullLocked seals batches while the pending votes fill a whole one. The
+// caller must hold rt.mu.
+func (e *Engine) sealFullLocked(rt *electionRuntime) error {
+	for {
+		if batch, _ := nextBatch(rt.pending, rt.batchSize); len(batch) < rt.batchSize {
+			return nil
+		}
+		if err := e.sealLocked(rt); err != nil {
+			return err
+		}
+	}
+}
+
+// sealLocked seals the next batch of pending votes (see nextBatch), applies it
+// to the state tree and persists the exact, re-drivable batch prove request
+// plus the new state snapshot. The caller must hold rt.mu.
 func (e *Engine) sealLocked(rt *electionRuntime) error {
-	n := len(rt.pending)
+	batch, rest := nextBatch(rt.pending, rt.batchSize)
+	n := len(batch)
 	if n == 0 {
 		return nil
 	}
-	if n > rt.batchSize {
-		n = rt.batchSize
+	el, err := e.store.Election(rt.id)
+	if err != nil {
+		return fmt.Errorf("load election: %w", err)
 	}
-	batch := rt.pending[:n]
 
 	votes := make([]chain.Vote, n)
 	bundles := make([]voteProofBundle, n)
@@ -50,12 +83,10 @@ func (e *Engine) sealLocked(rt *electionRuntime) error {
 	}
 
 	req := davinci.ProveRequest{
+		VK:           json.RawMessage(el.Config.VK),
 		Output:       "stark",
 		State:        stateData,
 		Reencryption: reenc,
-	}
-	if el, err := e.store.Election(rt.id); err == nil {
-		req.VK = json.RawMessage(el.Config.VK)
 	}
 	for i := range bundles {
 		req.Proofs = append(req.Proofs, bundles[i].Proof)
@@ -99,7 +130,7 @@ func (e *Engine) sealLocked(rt *electionRuntime) error {
 		}
 	}
 
-	rt.pending = rt.pending[n:]
+	rt.pending = rest
 	rt.batchSeq++
 	e.audit("system", "system", "seal_batch", rt.id)
 	log.Infow("sealed batch", "election", rt.id.String(), "seq", seq, "votes", n, "root", rt.state.Root())

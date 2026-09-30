@@ -42,7 +42,7 @@ func (c *Client) WaitReady(ctx context.Context, timeout time.Duration) error {
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+api.PingEndpoint, nil)
 		resp, err := c.http.Do(req)
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				return nil
 			}
@@ -81,7 +81,7 @@ func (c *Client) do(ctx context.Context, method, path, token string, body, out a
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return resp.StatusCode, fmt.Errorf("%s %s: status %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(raw)))

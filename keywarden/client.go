@@ -58,7 +58,7 @@ func (c *Client) EncryptedResults(electionID string) (*EncryptedResultsResponse,
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, httpErr("encrypted-results", resp)
 	}
@@ -87,7 +87,7 @@ func (c *Client) SubmitDecryptionKey(electionID string, key *big.Int) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return httpErr("decryption-key", resp)
 	}

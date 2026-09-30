@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/vocdoni/davinci-fold/api"
+	davinci "github.com/vocdoni/davinci-zkvm/go-sdk"
 	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/circuits/ballotproof"
 	bjjgnark "github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/crypto/ecc/bjj_gnark"
 	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/crypto/elgamal"
@@ -28,15 +29,16 @@ func NewElectionRequest(processID string, batchSize, foldEvery int, endTime time
 		return nil, nil, err
 	}
 	req := &api.ElectionCreateRequest{
-		ProcessID:  processID,
-		BallotMode: "0x" + bm.Text(16),
-		EncX:       "0x" + rx.Text(16),
-		EncY:       "0x" + ry.Text(16),
-		CensusRoot: "0x1234",
-		VK:         json.RawMessage(ballotproof.CircomVerificationKey),
-		BatchSize:  batchSize,
-		FoldEvery:  foldEvery,
-		EndTime:    endTime,
+		ProcessID:    processID,
+		BallotMode:   "0x" + bm.Text(16),
+		EncX:         "0x" + rx.Text(16),
+		EncY:         "0x" + ry.Text(16),
+		CensusOrigin: uint64(davinci.CensusOriginMerkle),
+		CensusRoot:   "0x1234",
+		VK:           json.RawMessage(ballotproof.CircomVerificationKey),
+		BatchSize:    batchSize,
+		FoldEvery:    foldEvery,
+		EndTime:      endTime,
 	}
 	return req, priv, nil
 }

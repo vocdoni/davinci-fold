@@ -15,6 +15,7 @@ import (
 
 	"github.com/vocdoni/davinci-fold/orchestrator"
 	"github.com/vocdoni/davinci-fold/storage"
+	davinci "github.com/vocdoni/davinci-zkvm/go-sdk"
 	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/circuits/ballotproof"
 	bjjgnark "github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/crypto/ecc/bjj_gnark"
 	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/crypto/elgamal"
@@ -115,15 +116,16 @@ func testElectionBody(t *testing.T, processID string) *ElectionCreateRequest {
 	bm, err := spectestutil.FixedBallotMode().Pack()
 	qt.Assert(t, err, qt.IsNil)
 	return &ElectionCreateRequest{
-		ProcessID:  processID,
-		BallotMode: "0x" + bm.Text(16),
-		EncX:       "0x" + rx.Text(16),
-		EncY:       "0x" + ry.Text(16),
-		CensusRoot: "0x1234",
-		VK:         json.RawMessage(ballotproof.CircomVerificationKey),
-		BatchSize:  2,
-		FoldEvery:  4,
-		EndTime:    time.Now().Add(time.Hour),
+		ProcessID:    processID,
+		BallotMode:   "0x" + bm.Text(16),
+		EncX:         "0x" + rx.Text(16),
+		EncY:         "0x" + ry.Text(16),
+		CensusOrigin: uint64(davinci.CensusOriginMerkle),
+		CensusRoot:   "0x1234",
+		VK:           json.RawMessage(ballotproof.CircomVerificationKey),
+		BatchSize:    2,
+		FoldEvery:    4,
+		EndTime:      time.Now().Add(time.Hour),
 	}
 }
 
@@ -156,6 +158,25 @@ func TestCreateAndGetElection(t *testing.T) {
 	a.Router().ServeHTTP(rec, req)
 	c.Assert(rec.Code, qt.Equals, http.StatusOK)
 	c.Assert(rec.Body.String(), qt.Contains, "abcdef")
+}
+
+// TestCreateElectionRejectsCSP verifies an election with a census origin
+// ingest cannot verify is refused with a malformed-parameter error.
+func TestCreateElectionRejectsCSP(t *testing.T) {
+	c := qt.New(t)
+	a := newTestAPI(t)
+
+	el := testElectionBody(t, "0xc5b0")
+	el.CensusOrigin = uint64(davinci.CensusOriginCSP)
+	body, err := json.Marshal(el)
+	c.Assert(err, qt.IsNil)
+	req := httptest.NewRequest(http.MethodPost, ElectionsEndpoint, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+mintToken(t, RoleAdmin, "admin"))
+	rec := httptest.NewRecorder()
+	a.Router().ServeHTTP(rec, req)
+	c.Assert(rec.Code, qt.Equals, http.StatusBadRequest)
+	c.Assert(rec.Body.String(), qt.Contains, `"code":40003`)
+	c.Assert(rec.Body.String(), qt.Contains, "census origin 4 (CSP) is not supported")
 }
 
 // TestEncryptedResultsGating verifies the keywarden endpoint refuses to serve

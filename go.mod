@@ -3,17 +3,21 @@ module github.com/vocdoni/davinci-fold
 go 1.25.5
 
 require (
+	github.com/consensys/gnark v0.14.1-0.20260126121332-407111efab55
+	github.com/consensys/gnark-crypto v0.19.3-0.20260126145145-b5cf053fbc34
 	github.com/ethereum/go-ethereum v1.17.1
 	github.com/frankban/quicktest v1.14.6
 	github.com/fxamacker/cbor/v2 v2.9.0
 	github.com/go-chi/chi/v5 v5.2.3
 	github.com/go-chi/cors v1.2.1
 	github.com/golang-jwt/jwt/v4 v4.5.2
+	github.com/iden3/go-iden3-crypto v0.0.18-0.20241128121142-625bf563ffc5
 	github.com/rs/zerolog v1.34.0
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
 	github.com/vocdoni/davinci-node v0.0.2-0.20260302160544-e9393d9f6610
-	github.com/vocdoni/davinci-zkvm/go-sdk v0.0.0-20260713214547-ec0cd6610050
+	github.com/vocdoni/davinci-zkvm/go-sdk v0.0.0-20260930203549-f70585d21db5
+	github.com/vocdoni/lean-imt-go v0.0.2
 )
 
 require (
@@ -33,8 +37,6 @@ require (
 	github.com/cockroachdb/pebble v1.1.5 // indirect
 	github.com/cockroachdb/redact v1.1.6 // indirect
 	github.com/cockroachdb/tokenbucket v0.0.0-20250429170803-42689b6311bb // indirect
-	github.com/consensys/gnark v0.14.1-0.20260126121332-407111efab55 // indirect
-	github.com/consensys/gnark-crypto v0.19.3-0.20260126145145-b5cf053fbc34 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.7 // indirect
 	github.com/crate-crypto/go-eth-kzg v1.5.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
@@ -67,7 +69,6 @@ require (
 	github.com/holiman/bloomfilter/v2 v2.0.3 // indirect
 	github.com/holiman/uint256 v1.3.2 // indirect
 	github.com/huin/goupnp v1.3.0 // indirect
-	github.com/iden3/go-iden3-crypto v0.0.18-0.20241128121142-625bf563ffc5 // indirect
 	github.com/iden3/go-rapidsnark/prover v0.0.12 // indirect
 	github.com/iden3/go-rapidsnark/types v0.0.3 // indirect
 	github.com/iden3/go-rapidsnark/witness v0.0.6 // indirect
@@ -114,7 +115,6 @@ require (
 	github.com/urfave/cli/v2 v2.27.6 // indirect
 	github.com/vocdoni/arbo v0.0.0-20260501121933-158dce698e7a // indirect
 	github.com/vocdoni/davinci-circom v1.0.0 // indirect
-	github.com/vocdoni/lean-imt-go v0.0.2 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
@@ -142,5 +142,3 @@ require (
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
-
-replace github.com/vocdoni/davinci-zkvm/go-sdk => /home/p4u/davinci-zkvm/go-sdk

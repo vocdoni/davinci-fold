@@ -12,8 +12,8 @@ It is operated by whoever runs the proving infrastructure for a set of elections
 ## Overview
 
 davinci-fold is a single Go service with an HTTP API. For every election it checks each
-incoming ballot (Groth16 ballot proof, ECDSA signature, census root), applies ballots to the
-election state in batches, and sends each batch as a STARK job to the least-loaded prover.
+incoming ballot (Groth16 ballot proof, ECDSA signature, census membership), applies ballots to
+the election state in batches, and sends each batch as a STARK job to the least-loaded prover.
 Batch proofs do not depend on each other, so any prover can take any batch. The proofs are
 then gathered on one prover per election, the fold worker, which folds them into a recursive
 chain every few batches.
@@ -124,9 +124,10 @@ KEYWARDEN_JWT=$(mint keywarden keywarden-1)
    ./test-keywarden --mode=keygen --keyfile=keywarden-key.json
    ```
 
-3. Create the election. `vk` must be the davinci-circom ballot-proof verification key, which is
-   also the key ingest checks ballots against. The other fields are described in
-   [docs/api.md](docs/api.md#create-an-election).
+3. Create the election. `vk` is the ballot-proof verification key that ingest and the provers
+   check ballots against; without it the election uses the davinci-circom `v1.0.0` key. The
+   census must be a lean-IMT Merkle census (`censusOrigin` 1 to 3). The other fields are
+   described in [docs/api.md](docs/api.md#create-an-election).
 
    ```sh
    curl -LO https://raw.githubusercontent.com/vocdoni/davinci-circom/v1.0.0/artifacts/ballot_proof_vkey.json

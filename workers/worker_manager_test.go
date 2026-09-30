@@ -39,7 +39,6 @@ func newHealthServer(t *testing.T, queueLen int) *healthServer {
 	return hs
 }
 
-func (hs *healthServer) setQueue(n int) { atomic.StoreInt64(&hs.queueLen, int64(n)) }
 func (hs *healthServer) setDown(d bool) {
 	var v int32
 	if d {

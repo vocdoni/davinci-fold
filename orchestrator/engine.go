@@ -18,6 +18,7 @@ import (
 	"github.com/vocdoni/davinci-fold/workers"
 	davinci "github.com/vocdoni/davinci-zkvm/go-sdk"
 	"github.com/vocdoni/davinci-zkvm/go-sdk/chain"
+	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/circuits/ballotproof"
 )
 
 // Default sealing parameters.
@@ -35,7 +36,8 @@ type Options struct {
 	// than this, so low-traffic elections still make progress.
 	BatchTimeWindow time.Duration
 	// Validator gates submissions; nil installs the full cryptographic
-	// validator (ECDSA signature + Groth16 ballot proof + key bindings).
+	// validator (census proof + ECDSA signature + Groth16 ballot proof + key
+	// bindings).
 	Validator Validator
 	// Pool, when set, enables scatter/gather proving: sealed batches are
 	// dispatched to the worker pool and folded on cadence. Nil leaves the
@@ -79,6 +81,7 @@ type electionRuntime struct {
 	mu        sync.Mutex
 	id        types.ElectionID
 	cfg       chain.Config
+	rules     *voteRules // what ingest checks this election's votes against
 	state     *chain.State
 	pending   []*types.Vote // buffered votes not yet sealed, in arrival order
 	batchSeq  uint64        // next batch sequence number
@@ -98,7 +101,7 @@ func NewEngine(store *storage.Storage, opts Options) (*Engine, error) {
 		opts.BatchTimeWindow = defaultBatchTimeWindow
 	}
 	if opts.Validator == nil {
-		opts.Validator = newCryptoValidator()
+		opts.Validator = cryptoValidator{}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{
@@ -161,10 +164,11 @@ func (e *Engine) restore() error {
 // runtimeFromStorage restores a single election's State from its latest
 // snapshot and recomputes the next batch sequence from persisted batches.
 func (e *Engine) runtimeFromStorage(el *types.Election) (*electionRuntime, error) {
-	cfg, err := chainConfigFromElection(el.Config)
+	rules, err := newVoteRules(el.Config)
 	if err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
+	cfg := rules.cfg
 	blob, err := e.store.Snapshot(el.ID)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot: %w", err)
@@ -184,6 +188,7 @@ func (e *Engine) runtimeFromStorage(el *types.Election) (*electionRuntime, error
 	return &electionRuntime{
 		id:        el.ID,
 		cfg:       cfg,
+		rules:     rules,
 		state:     state,
 		batchSeq:  uint64(len(batches)),
 		batchSize: bs,
@@ -191,12 +196,23 @@ func (e *Engine) runtimeFromStorage(el *types.Election) (*electionRuntime, error
 }
 
 // CreateElection validates the config, builds the genesis state, persists the
-// election as Active and its genesis snapshot, and registers the runtime.
+// election as Active and its genesis snapshot, and registers the runtime. An
+// election without a vk gets the davinci-circom ballot-proof key; the vk is
+// stored re-encoded as the provers parse it (see parseBallotVK).
 func (e *Engine) CreateElection(subject string, el *types.Election) error {
-	cfg, err := chainConfigFromElection(el.Config)
+	if len(el.Config.VK) == 0 || string(el.Config.VK) == "null" {
+		el.Config.VK = ballotproof.CircomVerificationKey
+	}
+	_, vk, err := parseBallotVK(el.Config.VK)
+	if err != nil {
+		return fmt.Errorf("invalid election config: vk: %w", err)
+	}
+	el.Config.VK = vk
+	rules, err := newVoteRules(el.Config)
 	if err != nil {
 		return fmt.Errorf("invalid election config: %w", err)
 	}
+	cfg := rules.cfg
 	state, err := chain.NewState(cfg)
 	if err != nil {
 		return fmt.Errorf("genesis state: %w", err)
@@ -220,7 +236,7 @@ func (e *Engine) CreateElection(subject string, el *types.Election) error {
 		return fmt.Errorf("persist snapshot: %w", err)
 	}
 	e.mu.Lock()
-	e.runtimes[el.ID.String()] = &electionRuntime{id: el.ID, cfg: cfg, state: state, batchSize: el.BatchSize}
+	e.runtimes[el.ID.String()] = &electionRuntime{id: el.ID, cfg: cfg, rules: rules, state: state, batchSize: el.BatchSize}
 	e.mu.Unlock()
 
 	e.audit(subject, "admin", "create_election", el.ID)
@@ -325,10 +341,11 @@ func (e *Engine) sealIfStale(rt *electionRuntime) {
 	}
 }
 
-// endElection seals any remaining votes and transitions the election to Ended.
+// endElection seals the remaining votes, in as many batches as their slots
+// need, and transitions the election to Ended.
 func (e *Engine) endElection(rt *electionRuntime, el *types.Election) {
 	rt.mu.Lock()
-	if len(rt.pending) > 0 {
+	for len(rt.pending) > 0 {
 		if err := e.sealLocked(rt); err != nil {
 			log.Warnw("failed to seal final batch", "election", rt.id.String(), "error", err.Error())
 			rt.mu.Unlock()

@@ -1,19 +1,24 @@
 package orchestrator
 
 import (
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"strconv"
 
+	"github.com/consensys/gnark-crypto/ecc/bn254/twistededwards"
+	groth16 "github.com/consensys/gnark/backend/groth16/bn254"
 	"github.com/ethereum/go-ethereum/common"
+	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/vocdoni/davinci-fold/crypto"
-	"github.com/vocdoni/davinci-node/util/circomgnark"
 	davinci "github.com/vocdoni/davinci-zkvm/go-sdk"
-	"github.com/vocdoni/davinci-zkvm/go-sdk/chain"
 	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/circuits/ballotproof"
-	bjjgnark "github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/crypto/ecc/bjj_gnark"
+	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/crypto/ecc"
 	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/crypto/elgamal"
 	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/crypto/signatures/ethereum"
+	vtypes "github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/types"
 )
 
 // VoteSubmission is the decoded, self-authenticating vote payload a voter
@@ -21,7 +26,7 @@ import (
 // orchestrator applies to state plus the heavy ballot-proof material the
 // worker circuit re-verifies in-batch.
 type VoteSubmission struct {
-	// VoteID is the unique vote identifier (API-level bytes).
+	// VoteID is the unique vote identifier: VoteIDKey as 8 big-endian bytes.
 	VoteID []byte `json:"vote_id"`
 	// Address is the voter Ethereum address (20 bytes).
 	Address []byte `json:"address"`
@@ -35,30 +40,16 @@ type VoteSubmission struct {
 	// PublicInputs are the public signals for the ballot proof:
 	// [address_dec, voteID_dec, inputsHash_dec].
 	PublicInputs []string `json:"public_inputs"`
-	// Sig is the voter ECDSA signature over the ballot.
+	// Sig is the voter's ECDSA signature over the vote ID.
 	Sig json.RawMessage `json:"sig"`
-	// Census is the lean-IMT membership proof for the voter. It also fixes
-	// the voter's ballot slot (CensusProof.SlotKey), so it must be
-	// well-formed: no path bits above its depth, depth within the namespace.
+	// Census is the lean-IMT membership proof for the voter. Its leaf binds
+	// the voter's address, which fixes the ballot slot (CensusProof.SlotKey).
 	Census davinci.CensusProof `json:"census"`
 }
 
-// censusSlotOK rejects census proofs whose slot the batch guest would refuse:
-// path bits the Merkle walk never reads must be zero, and the depth must keep
-// the slot inside the ballot namespace.
-func censusSlotOK(cp davinci.CensusProof) error {
-	depth := len(cp.Siblings)
-	if depth > 61 {
-		return fmt.Errorf("census proof: depth %d exceeds 61", depth)
-	}
-	if cp.Index>>uint(depth) != 0 {
-		return fmt.Errorf("census proof: path bits above depth %d", depth)
-	}
-	return nil
-}
-
 // voteProofBundle is the per-vote proving material persisted in Vote.Payload
-// and re-assembled into the batch ProveRequest at seal time.
+// and re-assembled into the batch ProveRequest at seal time, in the encoding
+// the prover parses.
 type voteProofBundle struct {
 	Proof        json.RawMessage     `cbor:"proof"`
 	PublicInputs []string            `cbor:"publicInputs"`
@@ -66,199 +57,237 @@ type voteProofBundle struct {
 	Census       davinci.CensusProof `cbor:"census"`
 }
 
-// Validator decides whether a submission may enter an election's vote log.
-// Production uses cryptoValidator; unit tests use structuralValidator.
+// Validator decides whether a submission may enter an election's vote log
+// and returns its proving material as the batch will carry it. A vote it
+// accepts must never make a batch fail in the guest: one failed batch blocks
+// the whole election. Production uses cryptoValidator; unit tests use
+// structuralValidator.
 type Validator interface {
-	Validate(cfg chain.Config, sub *VoteSubmission) error
+	Validate(rules *voteRules, sub *VoteSubmission) (*voteProofBundle, error)
 }
 
-// structuralValidator performs only cheap well-formedness and binding checks.
-// It does NOT verify the Groth16 ballot proof or the ECDSA signature, so it is
-// not safe for production ingest; it exists for unit tests that exercise the
-// ingest/lifecycle mechanics with synthetic ballots. Production wiring uses
-// cryptoValidator (the nil-Options default).
+// checkVote runs the checks that need neither the ballot proof nor the
+// signature: the vote ID, the ballot and the census proof. It returns the
+// decoded ballot, the weight the census leaf carries and the canonical census
+// proof.
+func checkVote(rules *voteRules, sub *VoteSubmission) (*elgamal.Ballot, *big.Int, davinci.CensusProof, error) {
+	if len(sub.Address) != common.AddressLength {
+		return nil, nil, davinci.CensusProof{}, fmt.Errorf("address must be %d bytes", common.AddressLength)
+	}
+	// One encoding per vote-ID key, so the duplicate check on the stored ID is
+	// the state tree's: a key inserted twice fails the batch.
+	if len(sub.VoteID) != 8 {
+		return nil, nil, davinci.CensusProof{}, fmt.Errorf("vote_id must be 8 bytes, got %d", len(sub.VoteID))
+	}
+	if binary.BigEndian.Uint64(sub.VoteID) != sub.VoteIDKey {
+		return nil, nil, davinci.CensusProof{}, fmt.Errorf("vote_id_key does not match vote_id")
+	}
+	if !vtypes.VoteID(sub.VoteIDKey).Valid() {
+		return nil, nil, davinci.CensusProof{}, fmt.Errorf("vote ID %#x outside the vote-ID namespace", sub.VoteIDKey)
+	}
+	ballot, err := checkBallot(rules, sub.Ballot)
+	if err != nil {
+		return nil, nil, davinci.CensusProof{}, err
+	}
+	weight, census, err := verifyCensusProof(rules.cfg.CensusRoot, sub.Address, sub.Census)
+	if err != nil {
+		return nil, nil, davinci.CensusProof{}, err
+	}
+	return ballot, weight, census, nil
+}
+
+// checkBallot decodes the ballot and checks what the batch guest assumes of
+// the ciphertexts it re-encrypts and accumulates: every field past the ballot
+// mode's numFields is the identity (the guest rejects anything else), and
+// every other point is on BabyJubJub (a precondition of the guest's point
+// addition). A sound ballot proof implies the second; the first it leaves
+// unconstrained, so the inputs hash does not cover it.
+func checkBallot(rules *voteRules, raw []byte) (*elgamal.Ballot, error) {
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("missing ballot")
+	}
+	ballot := elgamal.NewBallot(rules.cfg.EncKey)
+	if err := ballot.Deserialize(raw); err != nil {
+		return nil, fmt.Errorf("malformed ballot: %w", err)
+	}
+	nf := int(rules.ballotMode.NumFields)
+	for i, ct := range ballot.Ciphertexts {
+		for _, p := range []ecc.Point{ct.C1, ct.C2} {
+			x, y := p.Point()
+			if i >= nf {
+				if x.Sign() != 0 || y.Cmp(big.NewInt(1)) != 0 {
+					return nil, fmt.Errorf("malformed ballot: field %d must be the identity, the election has %d fields", i, nf)
+				}
+				continue
+			}
+			var pt twistededwards.PointAffine
+			pt.X.SetBigInt(x)
+			pt.Y.SetBigInt(y)
+			if !pt.IsOnCurve() {
+				return nil, fmt.Errorf("malformed ballot: field %d is not on BabyJubJub", i)
+			}
+		}
+	}
+	return ballot, nil
+}
+
+// structuralValidator performs only the checks of checkVote. It does NOT
+// verify the Groth16 ballot proof, its public inputs or the ECDSA signature,
+// so it is not safe for production ingest; it exists for unit tests that
+// exercise the ingest/lifecycle mechanics with synthetic ballots. Production
+// wiring uses cryptoValidator (the nil-Options default).
 type structuralValidator struct{}
 
-func (structuralValidator) Validate(cfg chain.Config, sub *VoteSubmission) error {
-	if len(sub.VoteID) == 0 {
-		return fmt.Errorf("missing vote_id")
-	}
-	if len(sub.Ballot) == 0 {
-		return fmt.Errorf("missing ballot")
-	}
-	if err := elgamal.NewBallot(bjjgnark.New()).Deserialize(sub.Ballot); err != nil {
-		return fmt.Errorf("malformed ballot: %w", err)
-	}
+func (structuralValidator) Validate(rules *voteRules, sub *VoteSubmission) (*voteProofBundle, error) {
 	if len(sub.Proof) == 0 {
-		return fmt.Errorf("missing ballot proof")
+		return nil, fmt.Errorf("missing ballot proof")
 	}
 	if len(sub.PublicInputs) == 0 {
-		return fmt.Errorf("missing public_inputs")
+		return nil, fmt.Errorf("missing public_inputs")
 	}
 	if len(sub.Sig) == 0 {
-		return fmt.Errorf("missing signature")
+		return nil, fmt.Errorf("missing signature")
 	}
-	root, err := parseHexBig(sub.Census.Root)
+	_, _, census, err := checkVote(rules, sub)
 	if err != nil {
-		return fmt.Errorf("census root: %w", err)
+		return nil, err
 	}
-	if root.Cmp(cfg.CensusRoot) != 0 {
-		return fmt.Errorf("census root mismatch")
-	}
-	return censusSlotOK(sub.Census)
+	return &voteProofBundle{Proof: sub.Proof, PublicInputs: sub.PublicInputs, Sig: sub.Sig, Census: census}, nil
 }
 
-// voteSig is the on-disk ECDSA signature format input-gen and the integration
-// ballot generator emit (sigJSON). Only R, S and the recovery bit are needed to
-// recover the signer; the embedded public key and address are client-asserted
-// and deliberately ignored (the address is recovered from the signature).
+// voteSig is the signature a voter submits (the sigJSON the integration ballot
+// generator emits). Only R, S and the recovery bit are read; the signer is
+// recovered from them.
 type voteSig struct {
 	SignatureR string `json:"signature_r"`
 	SignatureS string `json:"signature_s"`
 	SignatureV byte   `json:"signature_v"`
 }
 
-// cryptoValidator fully authenticates a self-submitted vote before it enters an
-// election's log: it checks well-formedness and the light/heavy key bindings,
-// verifies the voter's ECDSA signature over the vote ID, and verifies the
-// Groth16 ballot proof against the protocol ballot circuit's verification key.
-//
-// This mirrors davinci-node's newVote handler. The one check it does not
-// replicate is the host-side recomputation of the ballot inputs hash
-// (BallotInputsHashIden3), because that needs the unpacked spec.BallotMode and
-// the voter weight, neither of which crosses davinci-fold's abstracted ingest
-// boundary. That ballot<->inputs-hash tie is instead enforced in-circuit by the
-// batch guest, which recomputes the hash from the submitted ballot and
-// re-verifies the proof against it; a ballot whose content does not match its
-// proof can therefore only fail its own batch STARK, never corrupt the
-// verifiable tally (the final PLONK + digest attest every transition).
-type cryptoValidator struct {
-	// ballotVK is the raw snarkjs verification key JSON of the ballot proof
-	// circuit. It is the protocol-fixed artifact, the same key the batch guest
-	// verifies each ballot proof against.
-	ballotVK []byte
+// proverSig is the signature as the prover's input builder reads it
+// (input-gen EcdsaSig, every field but signature_v required). The guest only
+// uses r, s and the recovery bit; the rest is informational.
+type proverSig struct {
+	PublicKeyX string `json:"public_key_x"`
+	PublicKeyY string `json:"public_key_y"`
+	SignatureR string `json:"signature_r"`
+	SignatureS string `json:"signature_s"`
+	SignatureV byte   `json:"signature_v"`
+	VoteID     uint64 `json:"vote_id"`
+	Address    string `json:"address"`
 }
 
-// newCryptoValidator builds the production validator bound to the protocol
-// ballot-proof verification key.
-func newCryptoValidator() *cryptoValidator {
-	return &cryptoValidator{ballotVK: ballotproof.CircomVerificationKey}
-}
+// cryptoValidator fully authenticates a self-submitted vote and checks every
+// guest rule that depends on what the voter sends, so an accepted vote cannot
+// fail its batch: checkVote, the ballot proof's public inputs (bound to the
+// address, the vote ID and, through the inputs hash, to the election, the
+// ballot and the census weight), the ECDSA signature over the vote ID and the
+// Groth16 ballot proof against the election's verification key. The proof,
+// public inputs and signature are stored re-encoded canonically, so the prover
+// parses exactly the values verified here.
+type cryptoValidator struct{}
 
-func (v *cryptoValidator) Validate(cfg chain.Config, sub *VoteSubmission) error {
-	// Well-formedness.
-	if len(sub.Address) != common.AddressLength {
-		return fmt.Errorf("address must be %d bytes", common.AddressLength)
-	}
-	if len(sub.VoteID) == 0 {
-		return fmt.Errorf("missing vote_id")
-	}
-	if len(sub.Ballot) == 0 {
-		return fmt.Errorf("missing ballot")
-	}
-	if err := elgamal.NewBallot(bjjgnark.New()).Deserialize(sub.Ballot); err != nil {
-		return fmt.Errorf("malformed ballot: %w", err)
-	}
+func (cryptoValidator) Validate(rules *voteRules, sub *VoteSubmission) (*voteProofBundle, error) {
 	if len(sub.Proof) == 0 {
-		return fmt.Errorf("missing ballot proof")
+		return nil, fmt.Errorf("missing ballot proof")
 	}
 	if len(sub.Sig) == 0 {
-		return fmt.Errorf("missing signature")
+		return nil, fmt.Errorf("missing signature")
 	}
-	if len(sub.PublicInputs) != 3 {
-		return fmt.Errorf("public_inputs: want 3 signals, got %d", len(sub.PublicInputs))
-	}
-
-	// Census root binding: the proof must target this election's census.
-	root, err := parseHexBig(sub.Census.Root)
+	ballot, weight, census, err := checkVote(rules, sub)
 	if err != nil {
-		return fmt.Errorf("census root: %w", err)
-	}
-	if root.Cmp(cfg.CensusRoot) != 0 {
-		return fmt.Errorf("census root mismatch")
-	}
-	if err := censusSlotOK(sub.Census); err != nil {
-		return err
+		return nil, err
 	}
 
-	// Bind the public signals and the light state-tree keys to the voter's
-	// address and vote ID, so the proof cannot attest one identity while the
-	// applied state mutation carries another.
-	addr := new(big.Int).SetBytes(sub.Address)
-	voteID := new(big.Int).SetBytes(sub.VoteID)
-	pubAddr, ok := new(big.Int).SetString(sub.PublicInputs[0], 10)
-	if !ok {
-		return fmt.Errorf("public_inputs[0]: not a decimal integer")
+	// Bind the public signals to the voter's address and vote ID, so the proof
+	// cannot attest one identity while the applied state mutation carries
+	// another.
+	pubs, pubVec, err := parsePublicInputs(sub.PublicInputs)
+	if err != nil {
+		return nil, fmt.Errorf("public_inputs: %w", err)
 	}
-	pubVoteID, ok := new(big.Int).SetString(sub.PublicInputs[1], 10)
-	if !ok {
-		return fmt.Errorf("public_inputs[1]: not a decimal integer")
+	address := new(big.Int).SetBytes(sub.Address)
+	if pubs[0].Cmp(address) != 0 {
+		return nil, fmt.Errorf("public_inputs address does not match submission address")
 	}
-	if pubAddr.Cmp(addr) != 0 {
-		return fmt.Errorf("public_inputs address does not match submission address")
+	if !pubs[1].IsUint64() || pubs[1].Uint64() != sub.VoteIDKey {
+		return nil, fmt.Errorf("public_inputs vote ID does not match submission vote ID")
 	}
-	if pubVoteID.Cmp(voteID) != 0 {
-		return fmt.Errorf("public_inputs vote ID does not match submission vote ID")
+	// The inputs hash commits the proof to the election (process ID, ballot
+	// mode, encryption key), the ballot as submitted and the census weight.
+	// The batch guest recomputes it from the same values.
+	inputsHash, err := ballotproof.BallotInputsHashGnark(rules.processID, rules.ballotMode, rules.cfg.EncKey,
+		vtypes.HexBytes(sub.Address), vtypes.VoteID(sub.VoteIDKey), ballot, (*vtypes.BigInt)(weight))
+	if err != nil {
+		return nil, fmt.Errorf("inputs hash: %w", err)
 	}
-	if !voteID.IsUint64() || voteID.Uint64() != sub.VoteIDKey {
-		return fmt.Errorf("vote_id_key does not match vote_id")
+	if pubs[2].Cmp(inputsHash.MathBigInt()) != 0 {
+		return nil, fmt.Errorf("public_inputs inputs hash does not match the ballot, election and census weight")
 	}
 
 	// ECDSA signature: recover the signer from (R,S,V) over the padded vote ID
-	// and require it to match the submitted address. SetBytes rejects high-S
-	// (malleability), so a re-signed duplicate cannot slip past dedup.
+	// and require it to match the submitted address.
 	sig, err := parseVoteSig(sub.Sig)
 	if err != nil {
-		return fmt.Errorf("signature: %w", err)
+		return nil, fmt.Errorf("signature: %w", err)
 	}
-	if sigOk, _ := sig.Verify(crypto.PadToSign(sub.VoteID), common.BytesToAddress(sub.Address)); !sigOk {
-		return fmt.Errorf("signature verification failed")
+	sigOk, pubKey := sig.Verify(crypto.PadToSign(sub.VoteID), common.BytesToAddress(sub.Address))
+	if !sigOk {
+		return nil, fmt.Errorf("signature verification failed")
 	}
 
-	// Groth16 ballot proof: verify the snarkjs proof against the protocol
-	// ballot-circuit VK and the submitted public signals. A bogus proof is
-	// rejected here rather than poisoning the batch STARK at prove time.
-	if err := v.verifyBallotProof(sub); err != nil {
-		return fmt.Errorf("ballot proof: %w", err)
+	// Groth16 ballot proof against the election's ballot VK (the one the
+	// batch ships to the provers). A bogus proof is rejected here rather than
+	// poisoning the batch STARK at prove time.
+	proof, proofJSON, err := parseBallotProof(sub.Proof)
+	if err != nil {
+		return nil, fmt.Errorf("ballot proof: %w", err)
 	}
-	return nil
+	if err := groth16.Verify(proof, rules.ballotVK, pubVec); err != nil {
+		return nil, fmt.Errorf("ballot proof: invalid proof")
+	}
+
+	rsv := sig.Bytes()
+	sigJSON, err := json.Marshal(&proverSig{
+		PublicKeyX: "0x" + hex.EncodeToString(pubKey[1:33]),
+		PublicKeyY: "0x" + hex.EncodeToString(pubKey[33:65]),
+		SignatureR: "0x" + hex.EncodeToString(rsv[:32]),
+		SignatureS: "0x" + hex.EncodeToString(rsv[32:64]),
+		SignatureV: rsv[64],
+		VoteID:     sub.VoteIDKey,
+		Address:    address.String(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode signature: %w", err)
+	}
+	return &voteProofBundle{
+		Proof:        proofJSON,
+		PublicInputs: []string{address.String(), strconv.FormatUint(sub.VoteIDKey, 10), pubs[2].String()},
+		Sig:          sigJSON,
+		Census:       census,
+	}, nil
 }
 
-// verifyBallotProof checks the snarkjs Groth16 ballot proof against the ballot
-// circuit verification key and the submission's public signals.
-func (v *cryptoValidator) verifyBallotProof(sub *VoteSubmission) error {
-	vk, err := circomgnark.UnmarshalCircomVerificationKeyJSON(v.ballotVK)
-	if err != nil {
-		return fmt.Errorf("load verification key: %w", err)
-	}
-	proof, err := circomgnark.UnmarshalCircomProofJSON(sub.Proof)
-	if err != nil {
-		return fmt.Errorf("decode proof: %w", err)
-	}
-	gnarkProof, err := circomgnark.ConvertCircomToGnark(vk, proof, sub.PublicInputs)
-	if err != nil {
-		return fmt.Errorf("convert proof: %w", err)
-	}
-	if ok, err := gnarkProof.Verify(); err != nil || !ok {
-		return fmt.Errorf("invalid proof")
-	}
-	return nil
-}
-
-// parseVoteSig decodes the sigJSON envelope into an ECDSASignature. It returns
-// an error on malformed hex or a high-S (rejected by SetBytes) signature.
+// parseVoteSig decodes a voter signature into an ECDSASignature the guest can
+// recover a key from: r and s in [1, n-1] (s at most n/2, which also stops a
+// re-signed duplicate) and a recovery bit of 0 or 1 (27 or 28 are accepted and
+// normalised).
 func parseVoteSig(raw json.RawMessage) (*ethereum.ECDSASignature, error) {
 	var js voteSig
 	if err := json.Unmarshal(raw, &js); err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
 	}
+	n := ethcrypto.S256().Params().N
 	r, err := parseHexBig(js.SignatureR)
 	if err != nil {
-		return nil, fmt.Errorf("R: %w", err)
+		return nil, fmt.Errorf("r: %w", err)
 	}
 	s, err := parseHexBig(js.SignatureS)
 	if err != nil {
-		return nil, fmt.Errorf("S: %w", err)
+		return nil, fmt.Errorf("s: %w", err)
+	}
+	if r.Sign() == 0 || r.Cmp(n) >= 0 || s.Sign() == 0 || s.Cmp(n) >= 0 {
+		return nil, fmt.Errorf("r and s must be in [1, n-1]")
 	}
 	buf := make([]byte, 65)
 	r.FillBytes(buf[0:32])
@@ -267,6 +296,9 @@ func parseVoteSig(raw json.RawMessage) (*ethereum.ECDSASignature, error) {
 	sig := new(ethereum.ECDSASignature).SetBytes(buf)
 	if sig == nil {
 		return nil, fmt.Errorf("invalid signature encoding")
+	}
+	if v := sig.Bytes()[64]; v > 1 {
+		return nil, fmt.Errorf("recovery id %d, want 0 or 1", v)
 	}
 	return sig, nil
 }

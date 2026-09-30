@@ -33,28 +33,6 @@ func (s *Storage) getArtifact(prefix, key []byte, out any) error {
 	return nil
 }
 
-// deleteArtifact removes the artifact at prefix+key.
-func (s *Storage) deleteArtifact(prefix, key []byte) error {
-	wTx := prefixeddb.NewPrefixedDatabase(s.db, prefix).WriteTx()
-	defer wTx.Discard()
-	if err := wTx.Delete(key); err != nil {
-		return err
-	}
-	return wTx.Commit()
-}
-
-// listKeys returns every key under prefix (copied).
-func (s *Storage) listKeys(prefix []byte) ([][]byte, error) {
-	var keys [][]byte
-	if err := prefixeddb.NewPrefixedReader(s.db, prefix).Iterate(nil, func(k, _ []byte) bool {
-		keys = append(keys, append([]byte(nil), k...))
-		return true
-	}); err != nil {
-		return nil, err
-	}
-	return keys, nil
-}
-
 // iterateArtifacts calls fn for every key/value under prefix. Returning false
 // from fn stops iteration. The value slice must not be retained.
 func (s *Storage) iterateArtifacts(prefix []byte, fn func(key, value []byte) bool) error {

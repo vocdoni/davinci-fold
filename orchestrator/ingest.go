@@ -46,16 +46,18 @@ func (e *Engine) SubmitVote(id types.ElectionID, sub *VoteSubmission) (*types.Vo
 	}
 	defer e.store.ReleaseAddress(id, addr)
 
-	if err := e.validator.Validate(rt.cfg, sub); err != nil {
+	bundle, err := e.validator.Validate(rt.rules, sub)
+	if err != nil {
+		return nil, fmt.Errorf("invalid vote: %w", err)
+	}
+	// The validator checked that the census leaf binds sub.Address, so this
+	// is the slot of the submitting voter.
+	slot, err := bundle.Census.SlotKey()
+	if err != nil {
 		return nil, fmt.Errorf("invalid vote: %w", err)
 	}
 
-	payload, err := cbor.Marshal(&voteProofBundle{
-		Proof:        sub.Proof,
-		PublicInputs: sub.PublicInputs,
-		Sig:          sub.Sig,
-		Census:       sub.Census,
-	})
+	payload, err := cbor.Marshal(bundle)
 	if err != nil {
 		return nil, fmt.Errorf("encode payload: %w", err)
 	}
@@ -63,7 +65,7 @@ func (e *Engine) SubmitVote(id types.ElectionID, sub *VoteSubmission) (*types.Vo
 	v := &types.Vote{
 		ID:          voteID,
 		Address:     sub.Address,
-		Slot:        sub.Census.SlotKey(),
+		Slot:        slot,
 		VoteIDKey:   sub.VoteIDKey,
 		Ballot:      sub.Ballot,
 		Payload:     payload,
@@ -75,14 +77,11 @@ func (e *Engine) SubmitVote(id types.ElectionID, sub *VoteSubmission) (*types.Vo
 
 	rt.mu.Lock()
 	rt.pending = append(rt.pending, v)
-	full := len(rt.pending) >= el.BatchSize
-	if full {
-		if err := e.sealLocked(rt); err != nil {
-			rt.mu.Unlock()
-			return nil, fmt.Errorf("seal batch: %w", err)
-		}
-	}
+	err = e.sealFullLocked(rt)
 	rt.mu.Unlock()
+	if err != nil {
+		return nil, fmt.Errorf("seal batch: %w", err)
+	}
 
 	e.audit("voter", "voter", "submit_vote", id)
 	return v, nil

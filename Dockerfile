@@ -2,12 +2,9 @@
 FROM golang:1.25 AS builder
 WORKDIR /src
 
-# The go-sdk dependency is consumed via a local replace directive, so the
-# build context must include the sibling davinci-zkvm/go-sdk tree. When
-# building standalone images, vendor or adjust the replace accordingly.
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download || true
+    go mod download
 
 COPY . .
 

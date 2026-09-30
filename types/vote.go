@@ -51,8 +51,9 @@ func (s VoteStatus) String() string {
 type Vote struct {
 	ID      VoteID `cbor:"id"`
 	Address []byte `cbor:"address"` // voter Ethereum address (20 bytes)
-	// Slot is the ballot state-tree key, derived from the census proof
-	// (davinci.CensusProof.SlotKey); the batch guest recomputes it.
+	// Slot is the ballot state-tree key, derived from the voter address the
+	// census leaf binds (davinci.CensusProof.SlotKey); the batch guest
+	// recomputes it.
 	Slot uint64 `cbor:"slot"`
 	// VoteIDKey is the numeric vote-ID state-tree key (bit 63 set), passed to
 	// chain.Vote at batch application.
