@@ -27,18 +27,20 @@ checks the final result.
    write. If the state refuses a vote (its vote-ID
    key is already in the tree, for example), the state is restored from the last snapshot, the
    vote is dropped with status `error` and the rest of the batch is sealed.
-3. **Prove.** Each sealed batch is sent as a STARK job to the healthy prover with the shortest
-   queue; the prover and job are stored as soon as the job is accepted. A failed job is
-   resubmitted, up to three attempts, each to the least-loaded prover that has not failed it
-   yet. A proof whose program key is not the batch circuit's of the pinned release (a prover
-   still running another guest, as in a rolling upgrade) counts as a failed job and is never
-   stored. The batch proof (`proof.bin`) is downloaded from the prover that made it and
-   stored.
-   Batches of one election are dispatched in sequence order, one at a time; different
-   elections run in parallel.
-4. **Gather.** The stored batch proof is imported into the election's fold worker with
-   davinci-zkvm's `POST /jobs/import`. A fold can only reference proofs in its own worker's
-   job store, which is why the gather step exists.
+3. **Prove.** A batch's prove request is fixed when it is sealed, so the batches of an
+   election are proved in parallel, as many at once as there are healthy provers. Each is
+   sent as a STARK job to an idle prover (see "One job at a time" below), the one with the
+   shortest queue first; the prover and job are stored as soon as the job is accepted. A
+   failed job is resubmitted, up to three attempts, each to a prover that has not failed it
+   yet, while the other batches go on. A proof whose program key is not the batch circuit's of
+   the pinned release (a prover still running another guest, as in a rolling upgrade) counts as
+   a failed job and is never stored. The batch proof (`proof.bin`) is downloaded from the prover
+   that made it and stored. Proving runs at most as many batches ahead of the next one to gather
+   as there are provers, so a slow batch holds the election's later batches back.
+4. **Gather.** The stored batch proofs are imported into the election's fold worker with
+   davinci-zkvm's `POST /jobs/import`, in sequence order: a batch is imported once every batch
+   before it is. A fold can only reference proofs in its own worker's job store, which is why
+   the gather step exists.
 5. **Fold.** After every `foldEvery` imported batches the fold worker folds them into the
    chain. The first fold runs a bootstrap pass to learn the aggregator's program key, which the
    guest cannot know about itself, and the genesis fold binds it; later folds extend the
@@ -108,6 +110,12 @@ Provers are davinci-zkvm services registered through `POST /workers/register`. R
 - **Bans.** A failed job or request counts against the prover that ran it. After more than
   three consecutive failures it is banned for 30 minutes; a success resets the count. A job
   that runs past `--worker.jobTimeout` (30 minutes by default) counts as failed.
+- **One job at a time.** davinci-fold runs one job at a time on each prover, across all
+  elections. A prove goes to a prover that runs no job of davinci-fold; a fold or a finalize
+  waits for its fold worker's current job, and goes before any new prove there. After a
+  restart, a prove job left by the previous run counts as running from the start of its
+  election's first pass. Jobs other clients send to a prover count only through its queue
+  length.
 - **Removal.** `DELETE /workers/{id}` takes a prover out of the pool and deletes its
   registration. Its running jobs count as failed and are sent elsewhere, as when a prover
   dies, and the fold chains pinned to it move at once.
@@ -152,8 +160,9 @@ then every election that is still open:
 - its fold chain from the fold checkpoint and the stored batches. Batches imported on the
   pinned fold worker but not folded are folded in sequence order. A proved batch not imported
   there is imported from its stored proof. A batch whose prove job was running or done on a
-  prover that still has it reuses that job; any other sealed batch is proved again, which is
-  safe because its prove request is fixed at seal time;
+  prover that still has it reuses that job, so batches that were proved in parallel each wait
+  for their own job; any other sealed batch is proved again, which is safe because its prove
+  request is fixed at seal time;
 - an `ended` election resumes its drain, and a `finalizing` one goes back to `decrypting` with
   `finalizeError` `finalize interrupted`: the key is never stored, so the keywarden submits it
   again.

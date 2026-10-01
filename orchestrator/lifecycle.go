@@ -93,6 +93,9 @@ func (e *Engine) changeStatus(rt *electionRuntime, subject, role string, to type
 		e.mu.Unlock()
 		e.setVotesStatus(rt.id, types.VoteStatusError)
 		e.deleteProofs(rt.id)
+		if e.scheduler != nil {
+			e.scheduler.Forget(rt.id)
+		}
 	}
 	e.audit(subject, role, statusActions[to], rt.id)
 	log.Infow("election status changed", "election", rt.id.String(),
@@ -288,6 +291,9 @@ func (e *Engine) finalizeElection(id types.ElectionID, key *big.Int) {
 		return
 	}
 	e.deleteProofs(id)
+	if e.scheduler != nil {
+		e.scheduler.Forget(id)
+	}
 	log.Infow("election results finalized", "election", id.String(), "tally", res.Tally)
 }
 

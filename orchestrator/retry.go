@@ -121,3 +121,12 @@ func (r *retries) succeeded(id types.ElectionID, task string) {
 		log.Infow("election task recovered", "election", id.String(), "task", task, "failures", st.failures)
 	}
 }
+
+// forget drops the tasks of an election that is canceled or has its results.
+func (r *retries) forget(id types.ElectionID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, task := range []string{taskEnd, taskDispatch, taskDrain} {
+		delete(r.tasks, retryKey(id, task))
+	}
+}

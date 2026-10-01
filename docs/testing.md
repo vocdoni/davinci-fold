@@ -7,14 +7,16 @@ go test ./...
 ```
 
 Unit tests need no provers, GPU or external network. They cover storage and restart recovery
-(on the in-memory and the Pebble backends), the prover pool against a fake `/health` server,
-the API handlers (JWT checks, error codes, status changes, the decryption-key call, log
-redaction, stored worker registrations), the election engine (ingest checks, census proofs,
-sealing of overwrites and of votes the state refuses, status changes, the background
-finalize, restore of pending votes and of worker registrations, retry backoff, using
-synthetic ballots), the scheduler against fake provers (fold cadence and checkpoints, cancel,
-prover removal, a chain moved without its last fold's proof, folds that keep failing, the
-checks before a prove job is reused) and the keywarden client. `go test ./...` also runs the chaos tests below.
+(on the in-memory and the Pebble backends), the prover pool against a fake `/health` server
+(health, bans, one job per prover at a time), the API handlers (JWT checks, error codes,
+status changes, the decryption-key call, log redaction, stored worker registrations), the
+election engine (ingest checks, census proofs, sealing of overwrites and of votes the state
+refuses, status changes, the background finalize, restore of pending votes and of worker
+registrations, retry backoff, using synthetic ballots), the scheduler against fake provers
+(fold cadence and checkpoints, cancel, prover removal, a chain moved without its last fold's
+proof, folds that keep failing, the reuse of prove jobs a previous run left and the claim on
+their provers, canceled and finished elections leaving the scheduler) and the keywarden
+client. `go test ./...` also runs the chaos tests below.
 Set `LOG_LEVEL=debug` to see the service logs.
 
 ## Integration tests
@@ -72,9 +74,10 @@ orchestrator makes (prove, job status, STARK info, raw proof, import with `kind`
 finalize, publics, PLONK) with deterministic proofs that record what a real proof attests,
 and checks what the guests check about the chain: each fold extends a fold proof of the same
 election and fold key, and its batches are of the pinned batch circuit and continue each
-other's state roots. A test can hold a
-job kind running, fail the next jobs, run other guests (another program key), make batch
-proofs every fold rejects, or stop a prover. Each test breaks the orchestrator or a
+other's state roots. A test can hold a job kind running, make every job run for a set time,
+fail the next jobs, run other guests (another program key), make batch proofs every fold
+rejects, or stop a prover; the fake records when each job ran and the order of the batch
+proofs imported into it. Each test breaks the orchestrator or a
 prover at one point and checks that the election reaches results with the expected tally,
 that every vote is `settled`, that the fold chain behind the results folds every sealed batch
 once and in order, and that the stored proofs are dropped.
@@ -93,6 +96,8 @@ once and in order, and that the stored proofs are dropped.
 | `TestChaosRejectedProof` | A batch proof every fold rejects: after three failed folds the batch is proved again on the other prover. |
 | `TestChaosBatchProverDeath` | A prover stops while it proves a batch. |
 | `TestChaosRemoveFoldWorker` | The fold worker is removed through the API, then a restart. |
+| `TestChaosScatter` | Eight batches on three provers: the proves overlap, no prover runs two jobs at once, a prover dies mid-prove and its batch is proved on another one while the rest go on; imports and folds stay in sequence order. |
+| `TestChaosRestartMidScatter` | A restart during the drain, with three batches proved at once: each waits for its own job again, and no batch is proved twice. |
 
 They take about 15 seconds together, most of it generating the ballots once.
 

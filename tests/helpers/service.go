@@ -6,7 +6,9 @@ package helpers
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"time"
 
@@ -157,12 +159,19 @@ func KeywardenToken() string {
 	return t
 }
 
-// freePort asks the OS for an unused TCP port on the loopback interface.
+// freePort returns an unused TCP port on the loopback interface. It is
+// picked below the usual ephemeral port range, so that the outgoing
+// connections of the tests running in parallel do not take it before the API
+// listens on it.
 func freePort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
+	for range 100 {
+		port := 20000 + rand.IntN(12000)
+		l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			continue
+		}
+		_ = l.Close()
+		return port, nil
 	}
-	defer func() { _ = l.Close() }()
-	return l.Addr().(*net.TCPAddr).Port, nil
+	return 0, errors.New("no free port")
 }

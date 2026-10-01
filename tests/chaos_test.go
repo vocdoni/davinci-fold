@@ -609,6 +609,7 @@ func TestChaosRemoveFoldWorker(t *testing.T) {
 
 	code, err := s.svc.Client.RemoveWorker(s.ctx, helpers.AdminToken(), s.worker(a.URL).ID)
 	c.Assert(err, qt.IsNil, qt.Commentf("status %d", code))
+	provedOnA := a.Count("prove")
 	s.waitFor("the chain on b", func() bool {
 		return s.election().FoldWorker == b.URL && b.Count("import:fold") == 1
 	})
@@ -622,5 +623,116 @@ func TestChaosRemoveFoldWorker(t *testing.T) {
 	s.vote(4, len(s.ballots.votes))
 	s.check(s.finish())
 	c.Assert(s.election().FoldWorker, qt.Equals, b.URL)
-	c.Assert(a.Count("prove"), qt.Equals, 2)
+	c.Assert(a.Count("prove"), qt.Equals, provedOnA)
+}
+
+// TestChaosScatter proves the batches of an election on three provers at
+// once, one batch per vote: the proves overlap, no prover ever runs two jobs
+// at a time, a prover that dies while it proves a batch has that batch
+// proved on another one while the others go on, and the batches are
+// imported and folded in seq order.
+func TestChaosScatter(t *testing.T) {
+	t.Parallel()
+	c := qt.New(t)
+	s := newChaosStack(t, 2)
+	a := s.prover("a", 0) // the fold worker
+	b := s.prover("b", 1)
+	d := s.prover("c", 2)
+	provers := []*helpers.FakeProver{a, b, d}
+	for _, p := range provers {
+		p.SetDelay(20 * time.Millisecond)
+		p.Hold(helpers.JobBatch)
+	}
+	s.create(1)
+
+	s.vote(0, len(s.ballots.votes))
+	s.waitFor("a prove running on every prover", func() bool {
+		for _, p := range provers {
+			if p.Running(helpers.JobBatch) == 0 {
+				return false
+			}
+		}
+		return true
+	})
+	var dying uint64
+	s.waitFor("the batch c proves", func() bool {
+		i := slices.IndexFunc(s.batches(), func(bi *types.BatchInput) bool { return bi.Worker == d.URL })
+		dying = uint64(i)
+		return i >= 0
+	})
+	d.Kill()
+	a.Release(helpers.JobBatch)
+	b.Release(helpers.JobBatch)
+
+	s.check(s.finish())
+	sealed := s.batches()
+	c.Assert(len(sealed), qt.Equals, len(s.ballots.votes))
+	c.Assert(s.election().FoldWorker, qt.Equals, a.URL)
+	for _, bi := range sealed {
+		c.Assert(bi.Worker == a.URL || bi.Worker == b.URL, qt.IsTrue, qt.Commentf("batch %d on %s", bi.Seq, bi.Worker))
+	}
+	c.Assert(d.Count("prove"), qt.Equals, 1)
+	c.Assert(a.Count("prove")+b.Count("prove"), qt.Equals, len(sealed), qt.Commentf("batch %d proved again", dying))
+
+	var proves []helpers.Interval
+	for _, p := range provers {
+		c.Assert(helpers.MaxConcurrent(p.Intervals()), qt.Equals, 1, qt.Commentf("jobs at once on %s", p.URL))
+		proves = append(proves, p.Intervals(helpers.JobBatch)...)
+	}
+	c.Assert(helpers.MaxConcurrent(proves), qt.Equals, len(provers))
+
+	imported := a.Imported()
+	c.Assert(len(imported), qt.Equals, len(sealed))
+	for i, p := range imported {
+		c.Assert(p.NewRoot, qt.Equals, sealed[i].NewStateRoot, qt.Commentf("import %d", i))
+	}
+}
+
+// TestChaosRestartMidScatter ends an election while three of its batches are
+// proved at once, on three provers, and restarts the orchestrator during the
+// drain: each of those batches waits for its prove job again, so no batch is
+// proved twice and no prover runs two jobs at a time.
+func TestChaosRestartMidScatter(t *testing.T) {
+	t.Parallel()
+	c := qt.New(t)
+	s := newChaosStack(t, 2)
+	provers := []*helpers.FakeProver{s.prover("a", 0), s.prover("b", 1), s.prover("c", 2)}
+	for _, p := range provers {
+		p.SetDelay(20 * time.Millisecond)
+		p.Hold(helpers.JobBatch)
+	}
+	s.create(1)
+
+	s.vote(0, len(s.ballots.votes))
+	s.setStatus(types.StatusEnded)
+	jobs := map[uint64]string{} // seq -> prove job, of the batches being proved
+	s.waitFor("three batches proved at once", func() bool {
+		for _, bi := range s.batches() {
+			if bi.JobID != "" {
+				jobs[bi.Seq] = bi.JobID
+			}
+		}
+		return len(jobs) == len(provers)
+	})
+	for _, p := range provers {
+		c.Assert(p.Running(helpers.JobBatch), qt.Equals, 1)
+	}
+	s.restart()
+
+	c.Assert(s.election().Status, qt.Equals, types.StatusEnded.String())
+	for _, p := range provers {
+		p.Release(helpers.JobBatch)
+	}
+	s.check(s.finish())
+	proves := 0
+	for _, p := range provers {
+		proves += p.Count("prove")
+		c.Assert(helpers.MaxConcurrent(p.Intervals()), qt.Equals, 1, qt.Commentf("jobs at once on %s", p.URL))
+	}
+	c.Assert(proves, qt.Equals, len(s.batches()))
+	for _, bi := range s.batches() {
+		if job, ok := jobs[bi.Seq]; ok {
+			c.Assert(bi.JobID, qt.Equals, job, qt.Commentf("batch %d", bi.Seq))
+		}
+	}
 }

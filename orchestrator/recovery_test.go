@@ -116,6 +116,12 @@ func TestRetries(t *testing.T) {
 	r.succeeded(id, taskDrain)
 	c.Assert(r.due(id, taskDrain), qt.IsTrue)
 
+	// A finished election's tasks are dropped.
+	r.failed(id, taskDispatch, errors.New("prover down"))
+	r.forget(id)
+	c.Assert(r.due(id, taskDispatch), qt.IsTrue)
+	c.Assert(r.take(id, taskDispatch), qt.IsFalse)
+
 	for failures, want := range map[int]time.Duration{
 		1: time.Second, 2: 2 * time.Second, 9: 256 * time.Second, 10: retryMaxDelay, 100: retryMaxDelay,
 	} {

@@ -1,6 +1,8 @@
 // Package workers is the prover-worker registry: it tracks subscribed remote
 // Rust prover services, health-polls them, applies ban/backoff on failure, and
-// hands out go-sdk clients to the least-loaded healthy worker.
+// hands out go-sdk clients to the least-loaded healthy worker. It also counts
+// the jobs the process runs on each worker, so that a worker runs one at a
+// time (see Acquire).
 //
 // It mirrors davinci-node's workers.WorkerManager (sync.Map of workers, atomic
 // counters, a ticker-driven ban/unban loop) but is keyed by worker base URL and
@@ -12,6 +14,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"slices"
 	"sync"
@@ -28,6 +31,10 @@ type WorkerBanRules struct {
 	BanTimeout          time.Duration // duration for which the worker is banned
 	FailuresToGetBanned int           // consecutive failed jobs before banning
 }
+
+// ErrWorkerRemoved is returned when a worker is removed from the pool while
+// it is waited for.
+var ErrWorkerRemoved = errors.New("worker removed from the pool")
 
 // DefaultWorkerBanRules provides the default ban rules for workers.
 var DefaultWorkerBanRules = &WorkerBanRules{
@@ -64,6 +71,8 @@ type Worker struct {
 	queueLen         int64 // atomic, refreshed by the health poll
 	healthy          int32 // atomic bool (1 = reachable at last poll)
 	missedPolls      int64 // atomic, consecutive failed health polls
+	jobs             int64 // atomic, claimed jobs running on it (see Acquire)
+	claimers         int64 // atomic, Claim calls waiting for it
 }
 
 // Timeouts of the requests to a worker. A prover must start answering a job
@@ -154,6 +163,9 @@ type WorkerManager struct {
 	rules          *WorkerBanRules
 	tickerInterval time.Duration
 	healthTimeout  time.Duration
+
+	freedMu sync.Mutex
+	freed   chan struct{} // closed when a claim is released or a worker removed
 }
 
 // NewWorkerManager creates a worker manager with the given ban rules. An
@@ -235,6 +247,7 @@ func (wm *WorkerManager) AddWorker(address, name string) *Worker {
 // RemoveWorker removes a worker from the pool.
 func (wm *WorkerManager) RemoveWorker(address string) {
 	wm.workers.Delete(address)
+	wm.wake()
 }
 
 // GetWorker retrieves a worker by address.
@@ -269,11 +282,20 @@ func (wm *WorkerManager) Has(w *Worker) bool {
 // queue length, leaving out the workers at the exclude addresses, or nil if
 // none is available.
 func (wm *WorkerManager) LeastLoaded(exclude ...string) *Worker {
+	return wm.leastLoaded(false, exclude)
+}
+
+// leastLoaded is LeastLoaded, leaving out with idle the workers that run a
+// claimed job or that a Claim waits for.
+func (wm *WorkerManager) leastLoaded(idle bool, exclude []string) *Worker {
 	var best *Worker
 	bestQ := int(^uint(0) >> 1) // max int
 	wm.workers.Range(func(_, value any) bool {
 		w, ok := value.(*Worker)
 		if !ok || !w.Healthy() || w.IsBanned(wm.rules) || slices.Contains(exclude, w.Address) {
+			return true
+		}
+		if idle && (atomic.LoadInt64(&w.jobs) > 0 || atomic.LoadInt64(&w.claimers) > 0) {
 			return true
 		}
 		if q := w.QueueLen(); q < bestQ {
@@ -282,6 +304,94 @@ func (wm *WorkerManager) LeastLoaded(exclude ...string) *Worker {
 		return true
 	})
 	return best
+}
+
+// Available returns how many workers can take a job: healthy and not banned.
+func (wm *WorkerManager) Available() int {
+	n := 0
+	wm.workers.Range(func(_, value any) bool {
+		if w, ok := value.(*Worker); ok && w.Healthy() && !w.IsBanned(wm.rules) {
+			n++
+		}
+		return true
+	})
+	return n
+}
+
+// A worker runs one job of the process at a time. A job claims its worker
+// for as long as it runs and Release frees it: a batch prove takes an idle
+// worker (Acquire); a fold or a finalize, which must run on the election's
+// fold worker, waits for that worker's current job and goes before any new
+// prove there (Claim); a job a previous run left on a worker is counted when
+// it is waited for again (Hold).
+
+// Acquire claims for one job the least-loaded worker that can take one
+// (healthy, not banned, not at an exclude address), runs no claimed job and
+// is not waited for by a Claim, or returns nil if there is none.
+func (wm *WorkerManager) Acquire(exclude ...string) *Worker {
+	for {
+		w := wm.leastLoaded(true, exclude)
+		if w == nil || atomic.CompareAndSwapInt64(&w.jobs, 0, 1) {
+			return w
+		}
+	}
+}
+
+// Claim claims w for one job as soon as it runs no claimed job; Acquire
+// leaves w out while Claim waits. It fails with ErrWorkerRemoved once w is
+// no longer in the pool, or with the context's error.
+func (wm *WorkerManager) Claim(ctx context.Context, w *Worker) error {
+	atomic.AddInt64(&w.claimers, 1)
+	defer atomic.AddInt64(&w.claimers, -1)
+	for {
+		freed := wm.Freed()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !wm.Has(w) {
+			return ErrWorkerRemoved
+		}
+		if atomic.CompareAndSwapInt64(&w.jobs, 0, 1) {
+			return nil
+		}
+		select {
+		case <-freed:
+		case <-ctx.Done():
+		}
+	}
+}
+
+// Hold counts a job already running on w as claimed.
+func (wm *WorkerManager) Hold(w *Worker) {
+	atomic.AddInt64(&w.jobs, 1)
+}
+
+// Release frees a claim on w.
+func (wm *WorkerManager) Release(w *Worker) {
+	if atomic.AddInt64(&w.jobs, -1) == 0 {
+		wm.wake()
+	}
+}
+
+// Freed returns a channel that is closed the next time a worker's last claim
+// is released or a worker is removed.
+func (wm *WorkerManager) Freed() <-chan struct{} {
+	wm.freedMu.Lock()
+	defer wm.freedMu.Unlock()
+	if wm.freed == nil {
+		wm.freed = make(chan struct{})
+	}
+	return wm.freed
+}
+
+// wake closes the channel Freed returned.
+func (wm *WorkerManager) wake() {
+	wm.freedMu.Lock()
+	defer wm.freedMu.Unlock()
+	if wm.freed != nil {
+		close(wm.freed)
+		wm.freed = nil
+	}
 }
 
 // Banned reports whether w is banned under the pool's ban rules.

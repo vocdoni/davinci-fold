@@ -217,3 +217,78 @@ func TestLost(t *testing.T) {
 	wm.RemoveWorker(w.Address)
 	c.Assert(wm.Lost(w), qt.IsTrue)
 }
+
+// TestJobClaims checks a worker runs one claimed job at a time: Acquire takes
+// idle workers only, a Claim waits for the worker's job and goes before any
+// Acquire, Hold counts a job already running, and Release frees the worker.
+func TestJobClaims(t *testing.T) {
+	c := qt.New(t)
+	hsA := newHealthServer(t, 0)
+	hsB := newHealthServer(t, 3)
+	wm := NewWorkerManager(nil)
+	a := wm.AddWorker(hsA.srv.URL, "a")
+	b := wm.AddWorker(hsB.srv.URL, "b")
+	wm.pollHealth()
+	c.Assert(wm.Available(), qt.Equals, 2)
+
+	c.Assert(wm.Acquire(), qt.Equals, a) // the least loaded
+	c.Assert(wm.Acquire(), qt.Equals, b)
+	c.Assert(wm.Acquire(), qt.IsNil)
+	c.Assert(wm.LeastLoaded(), qt.Equals, a) // still a fold worker candidate
+
+	// A Claim of a waits for a's job, and takes a before any Acquire.
+	claimed := make(chan error, 1)
+	go func() { claimed <- wm.Claim(context.Background(), a) }()
+	waitClaimer(c, a)
+	freed := wm.Freed()
+	wm.Release(a)
+	select {
+	case <-freed:
+	case <-time.After(5 * time.Second):
+		c.Fatal("a release did not close Freed")
+	}
+	c.Assert(wm.Acquire(b.Address), qt.IsNil)
+	c.Assert(receive(c, claimed), qt.IsNil)
+	wm.Release(a)
+	c.Assert(wm.Acquire(b.Address), qt.Equals, a)
+	wm.Release(a)
+
+	// A job left by a previous run keeps b busy.
+	wm.Release(b)
+	wm.Hold(b)
+	c.Assert(wm.Acquire(a.Address), qt.IsNil)
+	wm.Release(b)
+	c.Assert(wm.Acquire(a.Address), qt.Equals, b)
+
+	// A Claim gives up when the worker is removed or the context ends.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c.Assert(wm.Claim(ctx, b), qt.ErrorIs, context.Canceled)
+	go func() { claimed <- wm.Claim(context.Background(), b) }()
+	waitClaimer(c, b)
+	wm.RemoveWorker(b.Address)
+	c.Assert(receive(c, claimed), qt.ErrorIs, ErrWorkerRemoved)
+	c.Assert(wm.Available(), qt.Equals, 1)
+}
+
+// waitClaimer waits for a Claim to wait for w, failing after five seconds.
+func waitClaimer(c *qt.C, w *Worker) {
+	deadline := time.Now().Add(5 * time.Second)
+	for atomic.LoadInt64(&w.claimers) == 0 {
+		if time.Now().After(deadline) {
+			c.Fatal("no claim is waiting")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// receive returns the next error from ch, failing after five seconds.
+func receive(c *qt.C, ch <-chan error) error {
+	select {
+	case err := <-ch:
+		return err
+	case <-time.After(5 * time.Second):
+		c.Fatal("timed out waiting for a claim")
+		return nil
+	}
+}

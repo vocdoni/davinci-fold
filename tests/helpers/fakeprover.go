@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	davinci "github.com/vocdoni/davinci-zkvm/go-sdk"
 	"github.com/vocdoni/davinci-zkvm/go-sdk/chain"
@@ -135,11 +136,58 @@ func (l *Ledger) FinalChain() ([]*FakeProof, error) {
 type fakeJob struct {
 	kind    string
 	status  string // davinci.JobStatus*
-	final   string // status once released, for held jobs
+	final   string // status once it ends, for held and delayed jobs
 	err     string
 	proof   []byte // proof.bin of batch and fold jobs
 	publics []byte // finalize jobs
 	snark   map[string]string
+	held    bool      // runs until Release
+	doneAt  time.Time // a delayed job ends then
+	start   time.Time // when it was submitted
+	end     time.Time // when it ended, zero while it runs
+}
+
+// settle ends a delayed job whose time has come. The caller holds p.mu.
+func (j *fakeJob) settle() {
+	if j.status == davinci.JobStatusRunning && !j.held && !j.doneAt.IsZero() && !time.Now().Before(j.doneAt) {
+		j.status, j.end = j.final, j.doneAt
+	}
+}
+
+// Interval is when a job ran on a fake prover; End is zero while it runs.
+type Interval struct {
+	Start, End time.Time
+}
+
+// MaxConcurrent returns the most intervals that overlap at one instant. An
+// interval that has not ended overlaps every later one; one that took no
+// time (an import) overlaps none.
+func MaxConcurrent(ivs []Interval) int {
+	type event struct {
+		at    time.Time
+		delta int
+	}
+	var events []event
+	for _, iv := range ivs {
+		switch {
+		case iv.End.IsZero():
+			events = append(events, event{iv.Start, 1})
+		case iv.End.After(iv.Start):
+			events = append(events, event{iv.Start, 1}, event{iv.End, -1})
+		}
+	}
+	slices.SortFunc(events, func(a, b event) int {
+		if c := a.at.Compare(b.at); c != 0 {
+			return c
+		}
+		return a.delta - b.delta // an end before a start at the same instant
+	})
+	n, most := 0, 0
+	for _, e := range events {
+		n += e.delta
+		most = max(most, n)
+	}
+	return most
 }
 
 // FakeProver is an in-process davinci-zkvm prover in chained mode, for tests
@@ -150,9 +198,10 @@ type fakeJob struct {
 // the same config and fold vk, and its batches are of the pinned batch
 // circuit and continue each other's state roots. A finalize commits the
 // digest the orchestrator verifies, with the pinned circuit release's vks.
-// Jobs are done when submitted unless held; the next jobs of a kind can be
-// made to fail, the prover can run other guests (another vk) or make batch
-// proofs every fold rejects, and it can disappear.
+// Jobs are done when submitted unless held or delayed, and the prover
+// records when each one ran; the next jobs of a kind can be made to fail,
+// the prover can run other guests (another vk) or make batch proofs every
+// fold rejects, and it can disappear.
 type FakeProver struct {
 	URL    string
 	srv    *httptest.Server
@@ -163,12 +212,14 @@ type FakeProver struct {
 	jobs     map[string]*fakeJob
 	queueLen int
 	hold     map[string]bool
+	delay    time.Duration // how long each job runs
 	fail     map[string]int
 	counts   map[string]int
 	folds    []davinci.FoldRequest
-	batchVK  string // program vk of its batch guest
-	aggVK    string // program vk of its aggregator guest
-	poison   int    // batch proofs still to make rejected
+	imported []*FakeProof // batch proofs imported, in order
+	batchVK  string       // program vk of its batch guest
+	aggVK    string       // program vk of its aggregator guest
+	poison   int          // batch proofs still to make rejected
 }
 
 // NewFakeProver starts a fake prover recording its proofs in ledger. Close
@@ -225,10 +276,39 @@ func (p *FakeProver) Release(kind string) {
 	defer p.mu.Unlock()
 	p.hold[kind] = false
 	for _, j := range p.jobs {
-		if j.kind == kind && j.status == davinci.JobStatusRunning {
-			j.status = j.final
+		if j.kind == kind && j.held {
+			j.held, j.status, j.end = false, j.final, time.Now()
 		}
 	}
+}
+
+// SetDelay makes the jobs submitted from now on run for d.
+func (p *FakeProver) SetDelay(d time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.delay = d
+}
+
+// Intervals returns when the prove, fold and finalize jobs of kinds (every
+// kind if none) ran on the prover, imports included as taking no time.
+func (p *FakeProver) Intervals(kinds ...string) []Interval {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var ivs []Interval
+	for _, j := range p.jobs {
+		if len(kinds) == 0 || slices.Contains(kinds, j.kind) {
+			j.settle()
+			ivs = append(ivs, Interval{Start: j.start, End: j.end})
+		}
+	}
+	return ivs
+}
+
+// Imported returns the batch proofs imported into the prover, in order.
+func (p *FakeProver) Imported() []*FakeProof {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.imported)
 }
 
 // SetVKs makes the prover run other guests: its batch proofs and fold jobs
@@ -255,12 +335,13 @@ func (p *FakeProver) FailNext(kind string, n int) {
 	p.fail[kind] = n
 }
 
-// Running returns the number of held jobs of kind.
+// Running returns the number of running jobs of kind.
 func (p *FakeProver) Running(kind string) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	n := 0
 	for _, j := range p.jobs {
+		j.settle()
 		if j.kind == kind && j.status == davinci.JobStatusRunning {
 			n++
 		}
@@ -285,7 +366,8 @@ func (p *FakeProver) Folds() []davinci.FoldRequest {
 }
 
 // addJob registers a submitted job of kind, failed with failure if it is
-// not empty, held or failing as the controls say. The caller holds p.mu.
+// not empty, held, delayed or failing as the controls say. The caller holds
+// p.mu.
 func (p *FakeProver) addJob(j *fakeJob, failure string) string {
 	p.next++
 	id := fmt.Sprintf("%s-%d", j.kind, p.next)
@@ -297,9 +379,14 @@ func (p *FakeProver) addJob(j *fakeJob, failure string) string {
 	if failure != "" {
 		j.final, j.err = davinci.JobStatusFailed, failure
 	}
-	j.status = j.final
-	if p.hold[j.kind] {
-		j.status = davinci.JobStatusRunning
+	j.start = time.Now()
+	switch {
+	case p.hold[j.kind]:
+		j.status, j.held = davinci.JobStatusRunning, true
+	case p.delay > 0:
+		j.status, j.doneAt = davinci.JobStatusRunning, j.start.Add(p.delay)
+	default:
+		j.status, j.end = j.final, j.start
 	}
 	p.jobs[id] = j
 	return id
@@ -309,6 +396,9 @@ func (p *FakeProver) addJob(j *fakeJob, failure string) string {
 // answers with 400.
 func (p *FakeProver) doneJob(id string, kinds ...string) (*fakeJob, error) {
 	j, ok := p.jobs[id]
+	if ok {
+		j.settle()
+	}
 	switch {
 	case !ok:
 		return nil, fmt.Errorf("job %s not found", id)
@@ -379,9 +469,13 @@ func (p *FakeProver) importProof(w http.ResponseWriter, r *http.Request) {
 	if proof.Kind == JobBatch && proof.VK != chain.CircuitRelease.BatchVK {
 		p.counts["import:foreign"]++
 	}
+	if kind == JobBatch {
+		p.imported = append(p.imported, proof)
+	}
 	p.next++
 	id := fmt.Sprintf("import-%d", p.next)
-	p.jobs[id] = &fakeJob{kind: kind, status: davinci.JobStatusDone, proof: raw}
+	now := time.Now()
+	p.jobs[id] = &fakeJob{kind: kind, status: davinci.JobStatusDone, proof: raw, start: now, end: now}
 	writeJSON(w, http.StatusOK, davinci.ProveResponse{JobID: id})
 }
 
@@ -567,6 +661,7 @@ func (p *FakeProver) job(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "job not found", http.StatusNotFound)
 		return
 	}
+	j.settle()
 	resp := davinci.JobResponse{JobID: r.PathValue("id"), Status: j.status}
 	if j.status == davinci.JobStatusFailed {
 		resp.Error = &j.err

@@ -112,6 +112,10 @@ func (sc *Scheduler) finalizeOn(id types.ElectionID, fc *foldChain, w *workers.W
 		FoldVK:  fc.aggVK,
 		Results: *payload,
 	}
+	if err := sc.claim(w); err != nil {
+		return nil, fmt.Errorf("%w: %w", errFinalProofFailed, err)
+	}
+	defer sc.pool.Release(w)
 	finID, err := sc.runJob(w, "finalize", func(c *davinci.Client) (string, error) { return c.SubmitFinalize(req) })
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errFinalProofFailed, err)

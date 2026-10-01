@@ -13,10 +13,11 @@ It is operated by whoever runs the proving infrastructure for a set of elections
 
 davinci-fold is a single Go service with an HTTP API. For every election it checks each
 incoming ballot (Groth16 ballot proof, ECDSA signature, census membership), applies ballots to
-the election state in batches, and sends each batch as a STARK job to the least-loaded prover.
-Batch proofs do not depend on each other, so any prover can take any batch. The proofs are
-then gathered on one prover per election, the fold worker, which folds them into a recursive
-chain every few batches.
+the election state in batches, and sends each batch as a STARK job to an idle prover.
+Batch proofs do not depend on each other, so an election's batches are proved on several
+provers at once, one job per prover at a time. The proofs are then gathered in order on one
+prover per election, the fold worker, which folds them into a recursive chain every few
+batches.
 
 ```
 ballots ─▶ verify ─▶ seal batch ─▶ STARK on any prover ─▶ import on fold worker ─▶ fold

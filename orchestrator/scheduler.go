@@ -48,17 +48,21 @@ var (
 	errNoWorker = errors.New("no healthy worker available")
 	// errWorkerRemoved is returned when the worker running a job is removed
 	// from the pool.
-	errWorkerRemoved = errors.New("worker removed from the pool")
+	errWorkerRemoved = workers.ErrWorkerRemoved
 	// errFoldWorker marks a failure of an election's fold worker that the
 	// retries on it did not fix: the fold chain moves to another worker.
 	errFoldWorker = errors.New("fold worker failed")
 	// errJobFailed is a job the prover ran and reported as failed.
 	errJobFailed = errors.New("job failed")
+	// errStopped ends the work for an election that is no longer running:
+	// canceled, finished or unreadable (see stopped).
+	errStopped = errors.New("election no longer running")
 )
 
 // Scheduler drives the scatter/gather proving for sealed batches: it scatters
-// batch STARK proves across the whole pool, gathers each resulting proof onto
-// the election's pinned fold worker (import), and folds them there on the
+// batch STARK proves across the whole pool, an election's batches in
+// parallel (see scatter), gathers each resulting proof onto the election's
+// pinned fold worker (import) in seq order, and folds them there on the
 // configured cadence. It keeps in storage the proofs the chain needs to
 // continue elsewhere, and moves the chain to another worker when the fold
 // worker is lost or keeps failing. It adapts chain.Sequencer's fold
@@ -74,12 +78,12 @@ type Scheduler struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu     sync.Mutex
-	chains map[string]*foldChain // electionID -> fold-chain state
+	mu          sync.Mutex
+	chains      map[string]*foldChain  // electionID -> fold-chain state
+	dispatchers map[string]*dispatcher // electionID -> dispatch loop (see Notify)
 
-	wg          sync.WaitGroup
-	dispatchers sync.Map // electionID -> *dispatcher
-	driveMu     sync.Map // electionID -> *sync.Mutex, serializes the work on a fold chain
+	wg      sync.WaitGroup
+	driveMu sync.Map // electionID -> *sync.Mutex, serializes the work on a fold chain
 }
 
 // driveLock returns the per-election mutex that serializes all the work on
@@ -184,15 +188,16 @@ func NewScheduler(engine *Engine, pool *workers.WorkerManager, foldEvery int, ti
 	engine.store.SetReservationTimeout(maxJobAttempts*timeout + reservationMargin)
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Scheduler{
-		engine:    engine,
-		store:     engine.store,
-		pool:      pool,
-		timeout:   timeout,
-		poll:      poll,
-		foldEvery: foldEvery,
-		ctx:       ctx,
-		cancel:    cancel,
-		chains:    make(map[string]*foldChain),
+		engine:      engine,
+		store:       engine.store,
+		pool:        pool,
+		timeout:     timeout,
+		poll:        poll,
+		foldEvery:   foldEvery,
+		ctx:         ctx,
+		cancel:      cancel,
+		chains:      make(map[string]*foldChain),
+		dispatchers: make(map[string]*dispatcher),
 	}
 }
 
@@ -248,10 +253,10 @@ func (sc *Scheduler) legacyBatchesFolded(id types.ElectionID, foldCount uint64, 
 }
 
 // stopped reports whether no more work may be done for an election: it was
-// canceled or can no longer be read.
+// canceled, has its results, or can no longer be read.
 func (sc *Scheduler) stopped(id types.ElectionID) bool {
 	el, err := sc.store.Election(id)
-	return err != nil || el.Status == types.StatusCanceled
+	return err != nil || el.Status == types.StatusCanceled || el.Status == types.StatusResults
 }
 
 // foldWorker returns the election's fold worker, pinning the least-loaded
@@ -407,11 +412,12 @@ func (sc *Scheduler) drive(id types.ElectionID, drain bool) error {
 	return sc.advance(id, fc, drain)
 }
 
-// advance brings an election's fold chain up to its last sealed batch: in
-// seq order, each batch is proved (or its stored proof reused), imported onto
-// the fold worker and folded on the cadence; with drain, the batches left
-// below the cadence are folded too. An election without batches has no
-// chain yet. The caller holds the drive lock.
+// advance brings an election's fold chain up to its last sealed batch: the
+// batches are proved in parallel (see scatter), and in seq order each one is
+// imported onto the fold worker and folded on the cadence; with drain, the
+// batches left below the cadence are folded too. Batches sealed while it
+// runs are included. An election without batches has no chain yet. The
+// caller holds the drive lock.
 func (sc *Scheduler) advance(id types.ElectionID, fc *foldChain, drain bool) error {
 	batches, err := sc.store.ListBatchInputs(id)
 	if err != nil {
@@ -421,7 +427,10 @@ func (sc *Scheduler) advance(id types.ElectionID, fc *foldChain, drain bool) err
 		return nil
 	}
 	return sc.withFoldWorker(id, fc, func(w *workers.Worker) error {
-		for _, bi := range batches {
+		s := sc.newScatter(id, fc, batches)
+		defer s.wait()
+		for i := 0; i < len(s.batches); i++ {
+			bi := s.batches[i]
 			if len(fc.pending) >= fc.foldEvery {
 				if err := sc.fold(id, fc, w); err != nil {
 					return fmt.Errorf("fold: %w", err)
@@ -436,12 +445,12 @@ func (sc *Scheduler) advance(id types.ElectionID, fc *foldChain, drain bool) err
 			if sc.stopped(id) {
 				return nil
 			}
-			proof, err := sc.batchProof(id, fc, bi)
-			if err != nil {
-				return fmt.Errorf("batch %d: %w", bi.Seq, err)
-			}
+			proof, err := s.proof(i)
 			if sc.stopped(id) {
 				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("batch %d: %w", bi.Seq, err)
 			}
 			if err := sc.importBatch(id, fc, w, bi, proof); err != nil {
 				return fmt.Errorf("batch %d: %w", bi.Seq, err)
@@ -456,19 +465,21 @@ func (sc *Scheduler) advance(id types.ElectionID, fc *foldChain, drain bool) err
 	})
 }
 
-// batchProof returns a batch's proof.bin: the stored one; or else the one of
-// the prove job a previous run left on its worker, if the worker still has
-// it; or else the one of a new prove. A new proof is checked to be of the
-// batch circuit and stored before it is returned, so the batch is never
-// proved twice to the same end.
-func (sc *Scheduler) batchProof(id types.ElectionID, fc *foldChain, bi *types.BatchInput) ([]byte, error) {
-	proof, err := sc.store.BatchProof(id, bi.Seq)
-	if err == nil {
-		return proof, nil
+// batchProof proves a batch that has no stored proof and stores its
+// proof.bin: it reuses the prove job a previous run left on held, the worker
+// the caller claimed for it (see reusable), if that job is still there;
+// otherwise it proves the batch again on a worker not in avoid if there is
+// one. The proof must be of the batch circuit (wantVK, when known). The claim
+// on held is released whatever happens. It runs on its own goroutine (see
+// scatter), so it only reads the fold chain through its arguments.
+func (sc *Scheduler) batchProof(id types.ElectionID, bi *types.BatchInput, held *workers.Worker, avoid []string, wantVK string) ([]byte, error) {
+	release := func() {
+		if held != nil {
+			sc.pool.Release(held)
+			held = nil
+		}
 	}
-	if !errors.Is(err, storage.ErrNotFound) {
-		return nil, fmt.Errorf("load proof: %w", err)
-	}
+	defer release()
 	if !sc.store.IsBatchReserved(id, bi.Seq) {
 		if err := sc.store.ReserveBatch(id, bi.Seq); err != nil {
 			return nil, fmt.Errorf("reserve: %w", err)
@@ -476,8 +487,14 @@ func (sc *Scheduler) batchProof(id types.ElectionID, fc *foldChain, bi *types.Ba
 	}
 	defer func() { _ = sc.store.ReleaseBatch(id, bi.Seq) }()
 
-	if proof = sc.reusedProof(id, fc, bi); proof == nil {
-		if proof, err = sc.prove(id, fc, bi); err != nil {
+	var proof []byte
+	if held != nil {
+		proof = sc.reusedProof(id, held, bi, wantVK)
+		release() // before a new prove, which may take that worker
+	}
+	if proof == nil {
+		var err error
+		if proof, err = sc.prove(id, bi, avoid, wantVK); err != nil {
 			return nil, err
 		}
 	}
@@ -490,19 +507,32 @@ func (sc *Scheduler) batchProof(id types.ElectionID, fc *foldChain, bi *types.Ba
 	return proof, nil
 }
 
-// reusedProof returns the proof of the prove job a previous run submitted
-// for the batch, waiting for the job if it still runs. It returns nil, and
-// the batch is proved again, if the worker or the job is gone, the job
-// failed, or it is not a STARK of the batch circuit (its program vk), or if
-// a proof of that worker was already dropped for the batch.
-func (sc *Scheduler) reusedProof(id types.ElectionID, fc *foldChain, bi *types.BatchInput) []byte {
-	if bi.JobID == "" || slices.Contains(fc.avoid[bi.Seq], bi.Worker) {
+// reusable returns the worker the prove job a previous run submitted for the
+// batch is on, claimed for waiting for that job (see WorkerManager.Hold), or
+// nil if there is no such job, the worker left the pool or a proof of it was
+// dropped for the batch (it is in avoid).
+//
+// ponytail: such a job is claimed when its election's pass starts (see
+// scatter.start), so right after a restart another election's prove may
+// share its prover for a while. Claiming every such job when the elections
+// are restored is the upgrade if that matters.
+func (sc *Scheduler) reusable(bi *types.BatchInput, avoid []string) *workers.Worker {
+	if bi.JobID == "" || slices.Contains(avoid, bi.Worker) {
 		return nil
 	}
 	w, ok := sc.pool.GetWorker(bi.Worker)
 	if !ok {
 		return nil
 	}
+	sc.pool.Hold(w)
+	return w
+}
+
+// reusedProof returns the proof of the prove job a previous run submitted
+// for the batch on w, waiting for the job if it still runs. It returns nil,
+// and the batch is proved again, if the job is gone or failed, or it is not
+// a STARK of the batch circuit (its program vk).
+func (sc *Scheduler) reusedProof(id types.ElectionID, w *workers.Worker, bi *types.BatchInput, wantVK string) []byte {
 	job, err := w.Client().GetJob(bi.JobID)
 	if err != nil {
 		return nil
@@ -515,7 +545,7 @@ func (sc *Scheduler) reusedProof(id types.ElectionID, fc *foldChain, bi *types.B
 	if err := sc.waitJob(w, bi.JobID); err != nil {
 		return nil
 	}
-	if err := sc.checkBatchVK(fc, w, bi.JobID); err != nil {
+	if err := checkBatchVK(w, bi.JobID, wantVK); err != nil {
 		log.Warnw("not reusing the batch's prove job", "election", id.String(), "seq", bi.Seq,
 			"worker", w.Address, "job", bi.JobID, "error", err.Error())
 		return nil
@@ -529,12 +559,12 @@ func (sc *Scheduler) reusedProof(id types.ElectionID, fc *foldChain, bi *types.B
 	return proof
 }
 
-// prove proves a batch on the least-loaded worker and returns its proof.bin,
-// moving to another worker when a job fails, up to maxJobAttempts jobs. The
-// workers whose proof of the batch was dropped are tried last. The worker
-// and job are persisted when the job is submitted, so a restart can reuse it
-// (see reusedProof).
-func (sc *Scheduler) prove(id types.ElectionID, fc *foldChain, bi *types.BatchInput) ([]byte, error) {
+// prove proves a batch on an idle worker (see acquire) and returns its
+// proof.bin, moving to another worker when a job fails, up to maxJobAttempts
+// jobs. The workers in avoid, whose proof of the batch was dropped, are
+// tried last. The worker and job are persisted when the job is submitted, so
+// a restart can reuse it (see reusable).
+func (sc *Scheduler) prove(id types.ElectionID, bi *types.BatchInput, avoid []string, wantVK string) ([]byte, error) {
 	var req davinci.ProveRequest
 	if err := json.Unmarshal(bi.ProveRequest, &req); err != nil {
 		return nil, fmt.Errorf("decode prove request: %w", err)
@@ -542,19 +572,17 @@ func (sc *Scheduler) prove(id types.ElectionID, fc *foldChain, bi *types.BatchIn
 	req.Output = "stark"
 
 	var lastErr error
-	failed := slices.Clone(fc.avoid[bi.Seq])
+	failed := slices.Clone(avoid)
 	for attempt := 1; attempt <= maxJobAttempts; attempt++ {
-		w := sc.pool.LeastLoaded(failed...)
-		if w == nil {
-			w = sc.pool.LeastLoaded()
-		}
-		if w == nil {
+		w, err := sc.acquire(id, failed)
+		if err != nil {
 			if lastErr == nil {
-				return nil, errNoWorker
+				return nil, err
 			}
 			return nil, lastErr
 		}
-		proof, err := sc.proveOn(id, fc, bi, w, &req)
+		proof, err := sc.proveOn(id, bi, w, &req, wantVK)
+		sc.pool.Release(w)
 		if err == nil {
 			sc.pool.WorkerResult(w.Address, true)
 			return proof, nil
@@ -571,10 +599,42 @@ func (sc *Scheduler) prove(id types.ElectionID, fc *foldChain, bi *types.BatchIn
 	return nil, lastErr
 }
 
+// acquire claims an idle worker to prove a batch of the election on (see
+// WorkerManager.Acquire): one not in avoid, or, when every worker that can
+// take a job is in avoid, one of those. While they all run a job, it waits
+// for one to be released. No job starts once the scheduler stops or the
+// election is stopped.
+func (sc *Scheduler) acquire(id types.ElectionID, avoid []string) (*workers.Worker, error) {
+	for {
+		if err := sc.ctx.Err(); err != nil {
+			return nil, err
+		}
+		if sc.stopped(id) {
+			return nil, errStopped
+		}
+		freed := sc.pool.Freed()
+		exclude := avoid
+		if sc.pool.LeastLoaded(avoid...) == nil {
+			exclude = nil
+		}
+		if sc.pool.LeastLoaded(exclude...) == nil {
+			return nil, errNoWorker
+		}
+		if w := sc.pool.Acquire(exclude...); w != nil {
+			return w, nil
+		}
+		select {
+		case <-freed:
+		case <-time.After(sc.poll): // a worker may have become healthy
+		case <-sc.ctx.Done():
+		}
+	}
+}
+
 // proveOn runs one prove job of a batch on w and returns its proof.bin,
 // failing if the proof is not of the batch circuit (a worker running
 // another guest, as in a rolling upgrade).
-func (sc *Scheduler) proveOn(id types.ElectionID, fc *foldChain, bi *types.BatchInput, w *workers.Worker, req *davinci.ProveRequest) ([]byte, error) {
+func (sc *Scheduler) proveOn(id types.ElectionID, bi *types.BatchInput, w *workers.Worker, req *davinci.ProveRequest, wantVK string) ([]byte, error) {
 	jobID, err := w.Client().SubmitProve(req)
 	if err != nil {
 		return nil, fmt.Errorf("submit: %w", err)
@@ -587,7 +647,7 @@ func (sc *Scheduler) proveOn(id types.ElectionID, fc *foldChain, bi *types.Batch
 	if err := sc.waitJob(w, jobID); err != nil {
 		return nil, fmt.Errorf("job %s: %w", jobID, err)
 	}
-	if err := sc.checkBatchVK(fc, w, jobID); err != nil {
+	if err := checkBatchVK(w, jobID, wantVK); err != nil {
 		return nil, fmt.Errorf("job %s: %w", jobID, err)
 	}
 	proof, err := w.Client().FetchStarkRaw(jobID)
@@ -598,16 +658,14 @@ func (sc *Scheduler) proveOn(id types.ElectionID, fc *foldChain, bi *types.Batch
 }
 
 // checkBatchVK checks the STARK of job jobID on w has the batch circuit's
-// program vk, learning it from the first batch if no release is pinned.
-func (sc *Scheduler) checkBatchVK(fc *foldChain, w *workers.Worker, jobID string) error {
+// program vk want. With no want (no release pinned and no batch imported
+// yet), the import learns it (see importBatch).
+func checkBatchVK(w *workers.Worker, jobID, want string) error {
 	info, err := w.Client().FetchStarkInfo(jobID)
 	if err != nil {
 		return fmt.Errorf("stark info: %w", err)
 	}
-	switch want := fc.wantBatchVK(); {
-	case want == "":
-		fc.batchVK = info.ProgramVK
-	case !sameVK(info.ProgramVK, want):
+	if want != "" && !sameVK(info.ProgramVK, want) {
 		return fmt.Errorf("program vk %s is not the batch vk %s", info.ProgramVK, want)
 	}
 	return nil
@@ -674,6 +732,10 @@ func (sc *Scheduler) fold(id types.ElectionID, fc *foldChain, w *workers.Worker)
 	}
 	// The chain config comes from the election's immutable parameters.
 	chainCfg := *rt.current().ChainConfig()
+	if err := sc.claim(w); err != nil {
+		return err
+	}
+	defer sc.pool.Release(w)
 
 	pending := fc.pending
 	batchJobs := make([]string, len(pending))
@@ -823,6 +885,17 @@ func (sc *Scheduler) dropBatchProof(id types.ElectionID, fc *foldChain, bi *type
 	}
 }
 
+// claim claims the fold worker w for a fold or a finalize, waiting for the
+// job it runs (see WorkerManager.Claim). A worker removed meanwhile fails as
+// errFoldWorker.
+func (sc *Scheduler) claim(w *workers.Worker) error {
+	err := sc.pool.Claim(sc.ctx, w)
+	if errors.Is(err, workers.ErrWorkerRemoved) {
+		return fmt.Errorf("%w %s: %w", errFoldWorker, w.Address, err)
+	}
+	return err
+}
+
 // runFold submits a fold to the fold worker w and waits for it (see runJob).
 func (sc *Scheduler) runFold(w *workers.Worker, req *davinci.FoldRequest) (string, error) {
 	return sc.runJob(w, "fold", func(c *davinci.Client) (string, error) { return c.SubmitFold(req) })
@@ -830,7 +903,8 @@ func (sc *Scheduler) runFold(w *workers.Worker, req *davinci.FoldRequest) (strin
 
 // runJob submits a job to the fold worker w and waits for it, submitting the
 // identical request again when it fails, up to maxJobAttempts times. A
-// failure of every attempt is errFoldWorker.
+// failure of every attempt is errFoldWorker. The caller claims w (see
+// claim).
 func (sc *Scheduler) runJob(w *workers.Worker, what string, submit func(*davinci.Client) (string, error)) (string, error) {
 	var lastErr error
 	for attempt := 1; attempt <= maxJobAttempts; attempt++ {
