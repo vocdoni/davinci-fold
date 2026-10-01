@@ -44,12 +44,11 @@ type Options struct {
 	JobTimeout      time.Duration
 	JobPoll         time.Duration // job poll interval (orchestrator default if zero)
 	WorkerPoll      time.Duration // prover health-poll interval (1s if zero)
-	WorkerURLs      []string      // prover-worker base URLs to add up front, unstored
 }
 
 // NewTestServices boots storage, the worker pool, the engine, and the HTTP API
-// against tempDir, adding any provided worker URLs to the pool. Booting again
-// on the same tempDir restarts the orchestrator from its storage. The
+// against tempDir; provers are registered through the API. Booting again on
+// the same tempDir restarts the orchestrator from its storage. The
 // returned cleanup stops the services and closes storage.
 func NewTestServices(ctx context.Context, tempDir string, opts Options) (*TestServices, func(), error) {
 	if opts.BatchSize <= 0 {
@@ -71,9 +70,6 @@ func NewTestServices(ctx context.Context, tempDir string, opts Options) (*TestSe
 	// As the service does: the engine adds the stored registrations to the
 	// pool, then the pool starts polling.
 	pool := workers.NewWorkerManager(workers.DefaultWorkerBanRules, opts.WorkerPoll)
-	for _, url := range opts.WorkerURLs {
-		pool.AddWorker(url, "")
-	}
 	engine, err := orchestrator.NewEngine(store, orchestrator.Options{
 		BatchSize:       opts.BatchSize,
 		BatchTimeWindow: opts.BatchTimeWindow,

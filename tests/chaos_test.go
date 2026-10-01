@@ -3,7 +3,6 @@ package tests
 import (
 	"context"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
@@ -22,8 +21,6 @@ import (
 	"github.com/vocdoni/davinci-fold/workers"
 	davinci "github.com/vocdoni/davinci-zkvm/go-sdk"
 	"github.com/vocdoni/davinci-zkvm/go-sdk/tests/integration"
-	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/circuits/ballotproof"
-	spectestutil "github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/spec/testutil"
 )
 
 // The chaos tests run one election per test against fake provers (see
@@ -178,22 +175,8 @@ func (s *chaosStack) worker(address string) *workers.WorkerInfo {
 
 // create creates the election with the given batch size.
 func (s *chaosStack) create(batchSize int) {
-	root, ok := s.ballots.election.Census.Root()
-	qt.Assert(s.t, ok, qt.IsTrue)
-	bm, err := spectestutil.FixedBallotMode().Pack()
-	qt.Assert(s.t, err, qt.IsNil)
-	encX, encY := s.ballots.election.EncKey.Point()
-	_, err = s.svc.Client.CreateElection(s.ctx, helpers.AdminToken(), &api.ElectionCreateRequest{
-		ProcessID:    "0x" + s.id,
-		BallotMode:   "0x" + bm.Text(16),
-		EncX:         "0x" + encX.Text(16),
-		EncY:         "0x" + encY.Text(16),
-		CensusOrigin: uint64(s.ballots.election.CensusOrigin),
-		CensusRoot:   feHex(root),
-		VK:           json.RawMessage(ballotproof.CircomVerificationKey),
-		BatchSize:    batchSize,
-		FoldEvery:    s.opts.FoldEvery,
-	})
+	req := electionRequest(s.t, s.ballots.election, batchSize, s.opts.FoldEvery, time.Time{})
+	_, err := s.svc.Client.CreateElection(s.ctx, helpers.AdminToken(), req)
 	qt.Assert(s.t, err, qt.IsNil)
 }
 

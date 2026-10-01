@@ -146,27 +146,6 @@ func (c *Client) SubmitDecryptionKey(ctx context.Context, token, id string, key 
 	return &out, code, nil
 }
 
-// WaitResults polls an election until it has results, which it returns, or
-// its finalize fails or the timeout elapses.
-func (c *Client) WaitResults(ctx context.Context, id string, timeout time.Duration) (*api.ResultsResponse, error) {
-	deadline := time.Now().Add(timeout)
-	for {
-		el, err := c.GetElection(ctx, id)
-		if err != nil {
-			return nil, err
-		}
-		switch {
-		case el.Status == "results":
-			return c.Results(ctx, id)
-		case el.FinalizeError != "":
-			return nil, fmt.Errorf("finalize failed: %s", el.FinalizeError)
-		case time.Now().After(deadline):
-			return nil, fmt.Errorf("no results within %s (status %s)", timeout, el.Status)
-		}
-		time.Sleep(2 * time.Second)
-	}
-}
-
 // SetElectionStatus asks for an election status change (admin).
 func (c *Client) SetElectionStatus(ctx context.Context, token, id, status string) (*api.ElectionResponse, int, error) {
 	var out api.ElectionResponse

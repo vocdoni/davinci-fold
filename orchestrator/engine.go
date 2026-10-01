@@ -369,7 +369,7 @@ func (e *Engine) CreateElection(subject string, el *types.Election) error {
 	e.mu.Unlock()
 
 	e.audit(subject, "admin", "create_election", el.ID)
-	log.Infow("created election", "election", el.ID.String(), "root", state.Root(), "endTime", el.EndTime)
+	log.Infow("created election", "election", el.ID.String(), "root", state.Root(), "endTime", el.EndTime.Format(time.RFC3339))
 	return nil
 }
 
