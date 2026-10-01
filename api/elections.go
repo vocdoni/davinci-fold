@@ -133,6 +133,7 @@ func electionResponse(el *types.Election) *ElectionResponse {
 		FoldEvery:     el.FoldEvery,
 		EndTime:       el.EndTime.UTC(),
 		CreatedAt:     el.CreatedAt.UTC(),
+		FoldWorker:    el.FoldWorker,
 		FinalizeError: el.FinalizeError,
 	}
 }

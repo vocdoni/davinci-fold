@@ -35,6 +35,7 @@ import (
 // integration suite is enabled (RUN_INTEGRATION_TESTS), with or without
 // prover workers.
 func TestAdversarialIngest(t *testing.T) {
+	requireIntegration(t)
 	c := qt.New(t)
 
 	// Two real voters with real ballots. Voter 0 is the "honest" baseline;
@@ -227,6 +228,7 @@ func TestAdversarialIngest(t *testing.T) {
 // census leaf carries: a member whose leaf weight differs from the one the
 // proof committed to is rejected, as the guest would reject its batch.
 func TestIngestCensusWeight(t *testing.T) {
+	requireIntegration(t)
 	c := qt.New(t)
 	election, err := integration.NewElection(2)
 	c.Assert(err, qt.IsNil)

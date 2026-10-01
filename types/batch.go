@@ -14,13 +14,16 @@ type BatchInput struct {
 	NewStateRoot string `cbor:"newStateRoot"`
 	// VoteIDs included in this batch, in order.
 	VoteIDs []VoteID `cbor:"voteIDs"`
-	// Worker is the URL of the worker currently assigned to prove this batch.
+	// Worker is the URL of the worker the batch's prove job was sent to.
 	Worker string `cbor:"worker,omitempty"`
-	// JobID is the prove job on Worker (empty until dispatched).
+	// JobID is the prove job on Worker, stored when the job is submitted so a
+	// restart can reuse it (empty until dispatched).
 	JobID string `cbor:"jobID,omitempty"`
-	// ImportedID is the local job ID after importing the STARK onto the fold
-	// worker (empty until imported).
-	ImportedID string    `cbor:"importedID,omitempty"`
+	// ImportedID is the job ID of the batch STARK imported onto FoldWorker
+	// (empty until imported).
+	ImportedID string `cbor:"importedID,omitempty"`
+	// FoldWorker is the URL of the fold worker ImportedID lives on.
+	FoldWorker string    `cbor:"foldWorker,omitempty"`
 	SealedAt   time.Time `cbor:"sealedAt"`
 }
 
@@ -35,9 +38,11 @@ type FoldCheckpoint struct {
 	// FoldCount is the number of fold steps applied so far (matches the
 	// aggregator digest step_count).
 	FoldCount uint64 `cbor:"foldCount"`
-	// LastFoldJob is the fold job ID on the fold worker, chained as
-	// prev_fold_job into the next fold.
+	// LastFoldJob is the fold job ID on FoldWorker, chained as prev_fold_job
+	// into the next fold.
 	LastFoldJob string `cbor:"lastFoldJob,omitempty"`
+	// FoldWorker is the URL of the worker LastFoldJob lives on.
+	FoldWorker string `cbor:"foldWorker,omitempty"`
 	// StateRoot is the state root the fold chain attests up to: the new root
 	// of the last batch folded.
 	StateRoot string `cbor:"stateRoot"`

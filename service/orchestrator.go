@@ -26,12 +26,11 @@ type OrchestratorConfig struct {
 	WorkerPoll      time.Duration
 }
 
-// NewOrchestrator builds the worker pool, starts its health loop, and builds the
-// engine wired to that pool (enabling scatter/gather proving).
+// NewOrchestrator builds the worker pool and the engine wired to it (enabling
+// scatter/gather proving), which adds the stored worker registrations to the
+// pool, then starts the pool's health loop.
 func NewOrchestrator(ctx context.Context, conf OrchestratorConfig) (*OrchestratorService, error) {
 	pool := workers.NewWorkerManager(workers.DefaultWorkerBanRules, conf.WorkerPoll)
-	pool.Start(ctx)
-
 	engine, err := orchestrator.NewEngine(conf.Storage, orchestrator.Options{
 		BatchSize:       conf.BatchSize,
 		BatchTimeWindow: conf.BatchTimeWindow,
@@ -40,9 +39,9 @@ func NewOrchestrator(ctx context.Context, conf OrchestratorConfig) (*Orchestrato
 		JobTimeout:      conf.JobTimeout,
 	})
 	if err != nil {
-		pool.Stop()
 		return nil, err
 	}
+	pool.Start(ctx)
 	return &OrchestratorService{Engine: engine, Pool: pool}, nil
 }
 

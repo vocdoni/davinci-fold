@@ -19,8 +19,11 @@ var (
 	workerURLs []string
 )
 
-// TestMain boots the stack once for the whole package. It is gated by
-// RUN_INTEGRATION_TESTS so `go test ./...` stays fast and GPU-free by default.
+// TestMain boots the stack once for the whole package when
+// RUN_INTEGRATION_TESTS is set (to anything but false). Without it the
+// integration tests skip (see requireIntegration), so `go test ./...` stays
+// fast and GPU-free; the chaos tests, which build their own stacks against
+// fake provers, run either way.
 func TestMain(m *testing.M) {
 	// Ballot generation for >16 voters re-executes this test binary as a
 	// subprocess; intercept that mode before booting any services.
@@ -28,7 +31,7 @@ func TestMain(m *testing.M) {
 
 	if v := os.Getenv("RUN_INTEGRATION_TESTS"); v == "" || v == "false" {
 		log.Info("skipping davinci-fold integration tests (set RUN_INTEGRATION_TESTS=true)")
-		os.Exit(0)
+		os.Exit(m.Run())
 	}
 
 	log.Init(log.LogLevelDebug, "stdout", nil)
@@ -56,4 +59,13 @@ func TestMain(m *testing.M) {
 	cancel()
 	_ = os.RemoveAll(tempDir)
 	os.Exit(code)
+}
+
+// requireIntegration skips the calling test unless the integration suite is
+// enabled (RUN_INTEGRATION_TESTS).
+func requireIntegration(t *testing.T) {
+	t.Helper()
+	if services == nil {
+		t.Skip("integration test: set RUN_INTEGRATION_TESTS=true")
+	}
 }

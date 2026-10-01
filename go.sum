@@ -341,8 +341,8 @@ github.com/vocdoni/davinci-circom v1.0.0 h1:kTiOP8+RuZ5KUyjUUneFVX/1n+0K68KL9Q5H
 github.com/vocdoni/davinci-circom v1.0.0/go.mod h1:7CdVIumC1seueKlazgQDPNhCwnZhu9gRDlSiBKEM4Sc=
 github.com/vocdoni/davinci-node v0.0.2-0.20260302160544-e9393d9f6610 h1:AREfCoXg6m4+FH7kRc2SS/oUW+WIsSCYieEvfVllNY4=
 github.com/vocdoni/davinci-node v0.0.2-0.20260302160544-e9393d9f6610/go.mod h1:2k2xAD3mI3/5xmzeGdSNNPEx/drqJ2tG7Up1rP6tf4Q=
-github.com/vocdoni/davinci-zkvm/go-sdk v0.0.0-20260930203549-f70585d21db5 h1:eHDYQ8h4cUcXZtuvFyICret7NmiB2cvP4JXDKTHoqWI=
-github.com/vocdoni/davinci-zkvm/go-sdk v0.0.0-20260930203549-f70585d21db5/go.mod h1:p2pCm1eoMR5IBrv3QmID7xGpggT+5cxEy/ASy36MFPE=
+github.com/vocdoni/davinci-zkvm/go-sdk v0.0.0-20260930232448-785526f4eb63 h1:mM0/cUJ4wBWfP8rtVS8kIgCquA5Dq6njA0ncjQJFLbc=
+github.com/vocdoni/davinci-zkvm/go-sdk v0.0.0-20260930232448-785526f4eb63/go.mod h1:p2pCm1eoMR5IBrv3QmID7xGpggT+5cxEy/ASy36MFPE=
 github.com/vocdoni/lean-imt-go v0.0.2 h1:wk3aqH4L6VkhGDHrXAu8/sW0Y6WJT9bvJyX2uC9nfK4=
 github.com/vocdoni/lean-imt-go v0.0.2/go.mod h1:kzutM982wYEgEpuiw23mghA1o9UMXyK8Uauu0L0k2OA=
 github.com/wlynxg/anet v0.0.3/go.mod h1:eay5PRQr7fIVAMbTbchTnO9gG65Hg/uYGdc7mguHxoA=

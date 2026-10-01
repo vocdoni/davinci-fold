@@ -61,7 +61,9 @@ Returns the election:
 ```
 
 `batchSize` and `foldEvery` are the values the election uses, the process defaults when the
-request did not set them.
+request did not set them. Once its first batch is gathered, the election also shows
+`foldWorker`, the address of the prover holding its fold chain; it changes when the chain moves
+to another prover (see [architecture.md](architecture.md#provers)).
 
 ### `GET /elections`
 
@@ -207,8 +209,10 @@ response is logged.
 {"address": "http://10.0.0.5:8080", "name": "gpu-0"}
 ```
 
-`address` is the base URL of a davinci-zkvm prover. Registering an existing address returns it
-unchanged. Returns the prover as listed below.
+`address` is the base URL of a davinci-zkvm prover, `http` or `https` (`400`, `40016`
+otherwise). Registering an existing address returns it unchanged, with `name` filled in if it
+had none. The registration is stored, so the prover is back in the pool after a restart.
+Returns the prover as listed below.
 
 ### `GET /workers`
 
@@ -221,8 +225,10 @@ unchanged. Returns the prover as listed below.
 
 ### `DELETE /workers/{id}` (admin)
 
-Removes a prover from the pool. Its running jobs count as failed and go to other provers, as
-when a prover dies. Returns `200`, or `404` (`40015`) for an unknown `id`.
+Removes a prover from the pool and deletes its registration. Its running jobs count as failed
+and go to other provers, as when a prover dies, and the fold chain of every open election
+pinned to it moves to another prover at once. Returns `200`, or `404` (`40015`) for an unknown
+`id`.
 
 ## Errors
 

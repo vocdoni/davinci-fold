@@ -23,6 +23,7 @@ const (
 	defaultBatchTimeWindow  = 5 * time.Minute
 	defaultFoldEvery        = 4
 	defaultWorkerPollPeriod = 10 * time.Second
+	defaultWorkerJobTimeout = 30 * time.Minute
 )
 
 // Version is the build version, set at build time with -ldflags.
@@ -59,6 +60,7 @@ type FoldConfig struct {
 // WorkerConfig holds the prover-worker pool configuration.
 type WorkerConfig struct {
 	PollPeriod time.Duration `mapstructure:"pollPeriod"` // Health-poll interval per worker
+	JobTimeout time.Duration `mapstructure:"jobTimeout"` // Time limit of each prove, fold and finalize job
 }
 
 // LogConfig holds logging configuration.
@@ -89,6 +91,7 @@ func loadConfig() (*Config, error) {
 	flag.Int("fold.every", defaultFoldEvery, "fold after this many imported batch STARKs")
 	// Worker pool
 	flag.Duration("worker.pollPeriod", defaultWorkerPollPeriod, "health-poll interval per prover worker")
+	flag.Duration("worker.jobTimeout", defaultWorkerJobTimeout, "time limit of each prove, fold and finalize job on a prover")
 	// Logging
 	flag.StringP("log.level", "l", defaultLogLevel, "log level (debug, info, warn, error, fatal)")
 	flag.StringP("log.output", "o", defaultLogOutput, "log output (stdout, stderr or filepath)")
@@ -136,6 +139,9 @@ func validateConfig(cfg *Config) error {
 	}
 	if cfg.Fold.Every < 1 {
 		return fmt.Errorf("fold cadence must be at least 1, got: %d", cfg.Fold.Every)
+	}
+	if cfg.Worker.JobTimeout <= 0 {
+		return fmt.Errorf("job timeout must be positive, got: %v", cfg.Worker.JobTimeout)
 	}
 	return nil
 }

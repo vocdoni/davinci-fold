@@ -12,6 +12,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"net/http"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -52,7 +54,8 @@ type Worker struct {
 	Address string // base URL, the map key
 	Name    string
 
-	client *davinci.Client
+	client *davinci.Client // job calls
+	health *davinci.Client // health polls
 
 	consecutiveFails int64 // atomic
 	bannedUntilNanos int64 // atomic Unix nanoseconds, 0 = not banned
@@ -60,6 +63,23 @@ type Worker struct {
 	failedCount      int64 // atomic
 	queueLen         int64 // atomic, refreshed by the health poll
 	healthy          int32 // atomic bool (1 = reachable at last poll)
+	missedPolls      int64 // atomic, consecutive failed health polls
+}
+
+// Timeouts of the requests to a worker. A prover must start answering a job
+// call within jobResponseTimeout; the whole call, a proof.bin upload or
+// download included, may take up to jobRequestTimeout. A health poll must
+// finish within the manager's health timeout.
+const (
+	jobResponseTimeout = 30 * time.Second
+	jobRequestTimeout  = 5 * time.Minute
+)
+
+// jobHTTPClient is the HTTP client of a worker's job calls.
+func jobHTTPClient() *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.ResponseHeaderTimeout = jobResponseTimeout
+	return &http.Client{Timeout: jobRequestTimeout, Transport: t}
 }
 
 // WorkerID is the identifier of the worker at address: the first 8 bytes of
@@ -204,7 +224,8 @@ func (wm *WorkerManager) AddWorker(address, name string) *Worker {
 		ID:      WorkerID(address),
 		Address: address,
 		Name:    name,
-		client:  davinci.NewClient(address),
+		client:  davinci.NewClientWithHTTP(address, jobHTTPClient()),
+		health:  davinci.NewClientWithHTTP(address, &http.Client{Timeout: wm.healthTimeout}),
 	}
 	wm.workers.Store(address, w)
 	log.Debugw("worker added", "address", address, "name", name)
@@ -245,13 +266,14 @@ func (wm *WorkerManager) Has(w *Worker) bool {
 }
 
 // LeastLoaded returns the healthy, non-banned worker with the smallest polled
-// queue length, or nil if none are available.
-func (wm *WorkerManager) LeastLoaded() *Worker {
+// queue length, leaving out the workers at the exclude addresses, or nil if
+// none is available.
+func (wm *WorkerManager) LeastLoaded(exclude ...string) *Worker {
 	var best *Worker
 	bestQ := int(^uint(0) >> 1) // max int
 	wm.workers.Range(func(_, value any) bool {
 		w, ok := value.(*Worker)
-		if !ok || !w.Healthy() || w.IsBanned(wm.rules) {
+		if !ok || !w.Healthy() || w.IsBanned(wm.rules) || slices.Contains(exclude, w.Address) {
 			return true
 		}
 		if q := w.QueueLen(); q < bestQ {
@@ -260,6 +282,17 @@ func (wm *WorkerManager) LeastLoaded() *Worker {
 		return true
 	})
 	return best
+}
+
+// Banned reports whether w is banned under the pool's ban rules.
+func (wm *WorkerManager) Banned(w *Worker) bool { return w.IsBanned(wm.rules) }
+
+// Lost reports whether the work pinned to w has to move to another worker:
+// w was removed from the pool, is banned, or missed more health polls in a
+// row than the ban rules allow failed jobs.
+func (wm *WorkerManager) Lost(w *Worker) bool {
+	return !wm.Has(w) || w.IsBanned(wm.rules) ||
+		atomic.LoadInt64(&w.missedPolls) > int64(wm.rules.FailuresToGetBanned)
 }
 
 // BannedWorkers returns the currently banned workers.
@@ -328,12 +361,14 @@ func (wm *WorkerManager) pollHealth() {
 		if !ok {
 			return true
 		}
-		h, err := w.client.Health()
+		h, err := w.health.Health()
 		if err != nil || h == nil {
 			atomic.StoreInt32(&w.healthy, 0)
+			atomic.AddInt64(&w.missedPolls, 1)
 			return true
 		}
 		atomic.StoreInt32(&w.healthy, 1)
+		atomic.StoreInt64(&w.missedPolls, 0)
 		atomic.StoreInt64(&w.queueLen, int64(h.QueueLen))
 		return true
 	})

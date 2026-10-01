@@ -1,47 +1,59 @@
 package storage
 
 import (
+	"errors"
+	"fmt"
 	"math/big"
 	"time"
+
+	"github.com/vocdoni/davinci-node/db/prefixeddb"
 
 	"github.com/vocdoni/davinci-fold/types"
 )
 
-// nextVoteSeq atomically increments and returns the per-election vote
-// sequence counter. Caller must hold globalLock.
-func (s *Storage) nextVoteSeq(id types.ElectionID) (uint64, error) {
-	key := electionKey(id)
-	var seq uint64
-	var raw struct {
-		Seq uint64 `cbor:"seq"`
-	}
-	if err := s.getArtifact(voteSeqPrefix, key, &raw); err == nil {
-		seq = raw.Seq
-	}
-	seq++
-	raw.Seq = seq
-	if err := s.setArtifact(voteSeqPrefix, key, &raw); err != nil {
-		return 0, err
-	}
-	return seq, nil
+// voteSeqRecord is the stored per-election vote sequence counter.
+type voteSeqRecord struct {
+	Seq uint64 `cbor:"seq"`
 }
 
-// AddVote appends a vote to the election's ordered log with pending status.
+// AddVote appends a vote to the election's ordered log with pending status,
+// in one write with the vote sequence counter.
 func (s *Storage) AddVote(id types.ElectionID, v *types.Vote) error {
 	s.globalLock.Lock()
 	defer s.globalLock.Unlock()
 
-	seq, err := s.nextVoteSeq(id)
+	var counter voteSeqRecord
+	if err := s.getArtifact(voteSeqPrefix, electionKey(id), &counter); err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	counter.Seq++
+	v.Seq = counter.Seq
+	v.SubmittedAt = time.Now()
+
+	seq, err := EncodeArtifact(&counter)
 	if err != nil {
 		return err
 	}
-	v.Seq = seq
-	v.SubmittedAt = time.Now()
-
-	if err := s.setArtifact(votePrefix, subKey(id, v.ID), v); err != nil {
+	vote, err := EncodeArtifact(v)
+	if err != nil {
 		return err
 	}
-	return s.setVoteStatusLocked(id, v.ID, types.VoteStatusPending)
+	status, err := EncodeArtifact(&voteStatusRecord{Status: types.VoteStatusPending})
+	if err != nil {
+		return err
+	}
+	tx := s.db.WriteTx()
+	defer tx.Discard()
+	if err := prefixeddb.NewPrefixedWriteTx(tx, voteSeqPrefix).Set(electionKey(id), seq); err != nil {
+		return err
+	}
+	if err := prefixeddb.NewPrefixedWriteTx(tx, votePrefix).Set(subKey(id, v.ID), vote); err != nil {
+		return err
+	}
+	if err := prefixeddb.NewPrefixedWriteTx(tx, voteStatusPrefix).Set(subKey(id, v.ID), status); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Vote loads one vote of an election.
@@ -59,7 +71,8 @@ func (s *Storage) VoteExists(id types.ElectionID, voteID types.VoteID) bool {
 	return err == nil
 }
 
-// ListVotes returns every vote of an election ordered by submission sequence.
+// ListVotes returns every vote of an election, ordered by vote ID (Seq is
+// the submission order).
 func (s *Storage) ListVotes(id types.ElectionID) ([]*types.Vote, error) {
 	var out []*types.Vote
 	prefix := append(append([]byte{}, votePrefix...), electionScanPrefix(id)...)
@@ -75,10 +88,38 @@ func (s *Storage) ListVotes(id types.ElectionID) ([]*types.Vote, error) {
 	return out, nil
 }
 
+// voteStatusRecord is the stored status of a vote.
+type voteStatusRecord struct {
+	Status types.VoteStatus `cbor:"status"`
+}
+
 func (s *Storage) setVoteStatusLocked(id types.ElectionID, voteID types.VoteID, st types.VoteStatus) error {
-	return s.setArtifact(voteStatusPrefix, subKey(id, voteID), &struct {
-		Status types.VoteStatus `cbor:"status"`
-	}{Status: st})
+	return s.setArtifact(voteStatusPrefix, subKey(id, voteID), &voteStatusRecord{Status: st})
+}
+
+// VotesWithStatus returns the votes of an election in status st, ordered by
+// vote ID. It reads only the status records and the votes it returns.
+func (s *Storage) VotesWithStatus(id types.ElectionID, st types.VoteStatus) ([]*types.Vote, error) {
+	var ids []types.VoteID
+	prefix := append(append([]byte{}, voteStatusPrefix...), electionScanPrefix(id)...)
+	if err := s.iterateArtifacts(prefix, func(k, v []byte) bool {
+		var raw voteStatusRecord
+		if err := DecodeArtifact(v, &raw); err == nil && raw.Status == st {
+			ids = append(ids, types.VoteID(append([]byte(nil), k...)))
+		}
+		return true
+	}); err != nil {
+		return nil, err
+	}
+	votes := make([]*types.Vote, 0, len(ids))
+	for _, voteID := range ids {
+		v, err := s.Vote(id, voteID)
+		if err != nil {
+			return nil, fmt.Errorf("vote %s: %w", voteID, err)
+		}
+		votes = append(votes, v)
+	}
+	return votes, nil
 }
 
 // SetVoteStatus moves a vote to status st, unless it is already there or
@@ -94,9 +135,7 @@ func (s *Storage) SetVoteStatus(id types.ElectionID, voteID types.VoteID, st typ
 
 // VoteStatus returns a vote's current status.
 func (s *Storage) VoteStatus(id types.ElectionID, voteID types.VoteID) (types.VoteStatus, error) {
-	var raw struct {
-		Status types.VoteStatus `cbor:"status"`
-	}
+	var raw voteStatusRecord
 	if err := s.getArtifact(voteStatusPrefix, subKey(id, voteID), &raw); err != nil {
 		return 0, err
 	}

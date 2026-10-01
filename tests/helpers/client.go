@@ -105,6 +105,15 @@ func (c *Client) GetElection(ctx context.Context, id string) (*api.ElectionRespo
 	return &out, nil
 }
 
+// Vote reads a vote's pipeline status.
+func (c *Client) Vote(ctx context.Context, id, voteID string) (*api.VoteStatusResponse, error) {
+	var out api.VoteStatusResponse
+	if _, err := c.do(ctx, http.MethodGet, "/elections/"+id+"/votes/"+voteID, "", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // SubmitVote ingests a self-authenticating vote.
 func (c *Client) SubmitVote(ctx context.Context, id string, sub *orchestrator.VoteSubmission) (*api.VoteReceiptResponse, error) {
 	var out api.VoteReceiptResponse

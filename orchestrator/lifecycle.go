@@ -69,11 +69,11 @@ func (e *Engine) changeStatus(rt *electionRuntime, subject, role string, to type
 	}
 	switch to {
 	case types.StatusEnded:
-		// Seal every accepted vote, in as many batches as the slots need.
-		for len(rt.pending) > 0 {
-			if err := e.sealLocked(rt); err != nil {
-				return fmt.Errorf("seal pending votes: %w", err)
-			}
+		// Seal every accepted vote, in as many batches as the slots need. The
+		// drain seals what a failure here leaves.
+		if err := e.sealAllLocked(rt); err != nil {
+			log.Warnw("failed to seal the pending votes at the end; the drain seals them",
+				"election", rt.id.String(), "pending", len(rt.pending), "error", err.Error())
 		}
 	case types.StatusCanceled:
 		rt.pending = nil
@@ -92,11 +92,31 @@ func (e *Engine) changeStatus(rt *electionRuntime, subject, role string, to type
 		delete(e.runtimes, rt.id.String())
 		e.mu.Unlock()
 		e.setVotesStatus(rt.id, types.VoteStatusError)
+		e.deleteProofs(rt.id)
 	}
 	e.audit(subject, role, statusActions[to], rt.id)
 	log.Infow("election status changed", "election", rt.id.String(),
 		"from", from.String(), "to", to.String(), "root", rt.state.Root())
 	return nil
+}
+
+// sealAllLocked seals every pending vote, in as many batches as the slots
+// need. The caller must hold rt.mu.
+func (e *Engine) sealAllLocked(rt *electionRuntime) error {
+	for len(rt.pending) > 0 {
+		if err := e.sealLocked(rt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deleteProofs drops the proofs an election's fold chain kept, once the
+// chain is finished.
+func (e *Engine) deleteProofs(id types.ElectionID) {
+	if err := e.store.DeleteProofs(id); err != nil {
+		log.Warnw("failed to delete stored proofs", "election", id.String(), "error", err.Error())
+	}
 }
 
 // setVotesStatus moves every vote of an election to status st, as far as
@@ -114,11 +134,9 @@ func (e *Engine) setVotesStatus(id types.ElectionID, st types.VoteStatus) {
 	}
 }
 
-// drainAndPublish drives a just-Ended election to Decrypting: it drains any
-// remaining batches and pending folds onto the fold chain, then publishes the
-// encrypted results by advancing the status. The ciphertext itself is recomputed
-// from the live State on demand (EncryptedResults), so "publishing" is the status
-// move. Guarded by e.draining so only one drive runs per election at a time.
+// drainAndPublish drives an ended election to decrypting (see drain). A
+// failed drain is run again by the monitor, with backoff. Guarded by
+// e.draining so only one drive runs per election at a time.
 func (e *Engine) drainAndPublish(rt *electionRuntime) {
 	id := rt.id
 	if _, busy := e.draining.LoadOrStore(id.String(), struct{}{}); busy {
@@ -129,21 +147,43 @@ func (e *Engine) drainAndPublish(rt *electionRuntime) {
 	if e.scheduler == nil {
 		return // ingest-only mode cannot drain or finalize
 	}
-	if err := e.scheduler.Dispatch(id); err != nil {
-		log.Warnw("drain dispatch failed", "election", id.String(), "error", err.Error())
+	if err := e.drain(rt); err != nil {
+		if e.ctx.Err() == nil {
+			e.retries.failed(id, taskDrain, err)
+		}
 		return
 	}
-	if err := e.scheduler.Fold(id); err != nil {
-		log.Warnw("drain fold failed", "election", id.String(), "error", err.Error())
-		return
+	e.retries.succeeded(id, taskDrain)
+}
+
+// drain seals the votes still pending, proves and folds every batch onto the
+// fold chain, then publishes the encrypted results by moving the election to
+// decrypting. The ciphertext itself is recomputed from the live State on
+// demand (EncryptedResults).
+func (e *Engine) drain(rt *electionRuntime) error {
+	id := rt.id
+	rt.mu.Lock()
+	err := e.sealAllLocked(rt)
+	rt.mu.Unlock()
+	if err != nil {
+		return fmt.Errorf("seal pending votes: %w", err)
 	}
-	if err := e.store.SetElectionStatus(id, types.StatusDecrypting); err != nil {
-		log.Warnw("set decrypting failed", "election", id.String(), "error", err.Error())
-		return
+	if err := e.scheduler.Drain(id); err != nil {
+		return err
+	}
+	if err := e.store.UpdateElection(id, func(el *types.Election) error {
+		if el.Status != types.StatusEnded {
+			return transitionError(el.Status, types.StatusDecrypting)
+		}
+		el.Status = types.StatusDecrypting
+		return nil
+	}); err != nil {
+		return fmt.Errorf("set decrypting: %w", err)
 	}
 	e.audit("system", "system", "publish_encrypted_results", id)
 	log.Infow("encrypted results published",
 		"election", id.String(), "ciphertext", len(rt.current().EncryptedResults()))
+	return nil
 }
 
 // EncryptedResults returns the published results ciphertext (NumFields ElGamal
@@ -209,7 +249,11 @@ func (e *Engine) SubmitDecryptionKey(subject string, id types.ElectionID, key *b
 		return err
 	}
 	e.audit(subject, "keywarden", "submit_decryption_key", id)
-	go e.finalizeElection(id, key)
+	if !e.goBackground(func() { e.finalizeElection(id, key) }) {
+		// Stopping: the restart takes the election back to decrypting.
+		e.finalizing.Delete(id.String())
+		return fmt.Errorf("shutting down")
+	}
 	return nil
 }
 
@@ -236,11 +280,14 @@ func (e *Engine) finalizeElection(id types.ElectionID, key *big.Int) {
 		}
 		return
 	}
+	// The results are stored: the votes are settled before the election
+	// shows results.
+	e.setVotesStatus(id, types.VoteStatusSettled)
 	if err := e.store.SetElectionStatus(id, types.StatusResults); err != nil {
 		log.Warnw("set results failed", "election", id.String(), "error", err.Error())
 		return
 	}
-	e.setVotesStatus(id, types.VoteStatusSettled)
+	e.deleteProofs(id)
 	log.Infow("election results finalized", "election", id.String(), "tally", res.Tally)
 }
 

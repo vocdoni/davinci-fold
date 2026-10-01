@@ -31,8 +31,9 @@ and the fold worker checks those proofs in-circuit and wraps the whole chain int
 proof. davinci-fold checks that proof against its own state before serving the tally together
 with the four values `ZiskVerifier.verifySnarkProof` takes on-chain.
 
-Votes, sealed batches, fold checkpoints and state snapshots are stored in PebbleDB; after a
-restart the open elections resume from their last snapshot. The per-batch model, where every
+Votes, sealed batches, fold checkpoints, state snapshots, the proofs a fold chain needs and
+the prover registrations are stored in PebbleDB; after a restart the open elections resume
+where they were, and a fold chain moves to another prover when its own one fails. The per-batch model, where every
 batch is settled on Ethereum with its own proof, is implemented by
 [davinci-node](https://github.com/vocdoni/davinci-node); davinci-fold follows its conventions
 for configuration, storage and API.
@@ -79,6 +80,7 @@ them all.
 | `--batch.time`, `-b` | `DAVINCIFOLD_BATCH_TIME` | `5m` | Seal a partial batch once its oldest vote is this old. |
 | `--fold.every` | `DAVINCIFOLD_FOLD_EVERY` | `4` | Fold after this many batch proofs. |
 | `--worker.pollPeriod` | `DAVINCIFOLD_WORKER_POLLPERIOD` | `10s` | Prover health-check interval. |
+| `--worker.jobTimeout` | `DAVINCIFOLD_WORKER_JOBTIMEOUT` | `30m` | Time limit of each prove, fold and finalize job. |
 | `--log.level`, `-l` | `DAVINCIFOLD_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` or `fatal`. |
 | `--log.output`, `-o` | `DAVINCIFOLD_LOG_OUTPUT` | `stdout` | `stdout`, `stderr` or a file path. |
 | `--log.disableAPI` | `DAVINCIFOLD_LOG_DISABLEAPI` | `false` | Do not log API requests and responses. |
@@ -110,8 +112,8 @@ KEYWARDEN_JWT=$(mint keywarden keywarden-1)
 
 ### Running an election
 
-1. Register each prover. Registrations are kept in memory, so register the provers again after
-   a restart.
+1. Register each prover. Registrations are stored, so they survive a restart;
+   `DELETE /workers/{id}` removes one.
 
    ```sh
    curl -X POST http://127.0.0.1:8888/workers/register \

@@ -82,15 +82,17 @@ type ElectionConfig struct {
 
 // Election is the persisted election record and lifecycle state.
 type Election struct {
-	ID         ElectionID     `cbor:"id"`
-	Status     Status         `cbor:"status"`
-	Config     ElectionConfig `cbor:"config"`
-	BatchSize  int            `cbor:"batchSize"`
-	FoldEvery  int            `cbor:"foldEvery"`
-	EndTime    time.Time      `cbor:"endTime"`
-	CreatedAt  time.Time      `cbor:"createdAt"`
-	UpdatedAt  time.Time      `cbor:"updatedAt"`
-	FoldWorker string         `cbor:"foldWorker,omitempty"` // pinned fold worker URL
+	ID        ElectionID     `cbor:"id"`
+	Status    Status         `cbor:"status"`
+	Config    ElectionConfig `cbor:"config"`
+	BatchSize int            `cbor:"batchSize"`
+	FoldEvery int            `cbor:"foldEvery"`
+	EndTime   time.Time      `cbor:"endTime"`
+	CreatedAt time.Time      `cbor:"createdAt"`
+	UpdatedAt time.Time      `cbor:"updatedAt"`
+	// FoldWorker is the URL of the worker the election's fold chain is
+	// pinned to, empty until its first batch is gathered.
+	FoldWorker string `cbor:"foldWorker,omitempty"`
 	// FinalizeError is a short, fixed reason the last finalize failed, empty
 	// otherwise; the detail is in the log. It is cleared when a decryption
 	// key is submitted again.

@@ -32,8 +32,9 @@ type ElectionCreateRequest struct {
 	EndTime      time.Time       `json:"endTime,omitempty"`
 }
 
-// ElectionResponse is the public view of an election record. FinalizeError
-// is why the last finalize failed; the election is then decrypting again.
+// ElectionResponse is the public view of an election record. FoldWorker is
+// the address of the prover holding its fold chain. FinalizeError is why the
+// last finalize failed; the election is then decrypting again.
 type ElectionResponse struct {
 	ID            string    `json:"id"`
 	Status        string    `json:"status"`
@@ -41,6 +42,7 @@ type ElectionResponse struct {
 	FoldEvery     int       `json:"foldEvery"`
 	EndTime       time.Time `json:"endTime"`
 	CreatedAt     time.Time `json:"createdAt"`
+	FoldWorker    string    `json:"foldWorker,omitempty"`
 	FinalizeError string    `json:"finalizeError,omitempty"`
 }
 

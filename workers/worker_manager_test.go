@@ -168,3 +168,52 @@ func TestWorkerIDAndRemoval(t *testing.T) {
 	c.Assert(wm.Has(w), qt.IsFalse)
 	c.Assert(wm.Has(again), qt.IsTrue)
 }
+
+// TestLeastLoadedExclude checks the excluded workers are left out.
+func TestLeastLoadedExclude(t *testing.T) {
+	c := qt.New(t)
+	hsA := newHealthServer(t, 0)
+	hsB := newHealthServer(t, 3)
+	wm := NewWorkerManager(nil)
+	wm.AddWorker(hsA.srv.URL, "a")
+	wm.AddWorker(hsB.srv.URL, "b")
+	wm.pollHealth()
+
+	c.Assert(wm.LeastLoaded().Address, qt.Equals, hsA.srv.URL)
+	c.Assert(wm.LeastLoaded(hsA.srv.URL).Address, qt.Equals, hsB.srv.URL)
+	c.Assert(wm.LeastLoaded(hsA.srv.URL, hsB.srv.URL), qt.IsNil)
+}
+
+// TestLost checks a worker is lost once removed, banned, or unreachable for
+// more health polls in a row than the ban rules allow failed jobs.
+func TestLost(t *testing.T) {
+	c := qt.New(t)
+	hs := newHealthServer(t, 0)
+	wm := NewWorkerManager(&WorkerBanRules{BanTimeout: time.Minute, FailuresToGetBanned: 2})
+	w := wm.AddWorker(hs.srv.URL, "a")
+	wm.pollHealth()
+	c.Assert(wm.Lost(w), qt.IsFalse)
+
+	hs.setDown(true)
+	for range 2 {
+		wm.pollHealth()
+	}
+	c.Assert(w.Healthy(), qt.IsFalse)
+	c.Assert(wm.Lost(w), qt.IsFalse) // two missed polls are tolerated
+	wm.pollHealth()
+	c.Assert(wm.Lost(w), qt.IsTrue)
+	hs.setDown(false)
+	wm.pollHealth()
+	c.Assert(wm.Lost(w), qt.IsFalse)
+
+	for range 3 {
+		wm.WorkerResult(w.Address, false)
+	}
+	c.Assert(wm.Banned(w), qt.IsTrue)
+	c.Assert(wm.Lost(w), qt.IsTrue)
+	wm.ResetWorker(w.Address)
+	c.Assert(wm.Lost(w), qt.IsFalse)
+
+	wm.RemoveWorker(w.Address)
+	c.Assert(wm.Lost(w), qt.IsTrue)
+}

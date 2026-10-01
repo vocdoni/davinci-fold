@@ -29,4 +29,6 @@ var (
 	// ErrInvalidDecryptionKey: the key is not the private key of the
 	// election's encryption key.
 	ErrInvalidDecryptionKey = errors.New("invalid decryption key")
+	// ErrWorkerNotFound: no registered worker has the given ID.
+	ErrWorkerNotFound = errors.New("worker not found")
 )

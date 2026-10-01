@@ -6,9 +6,12 @@
 package orchestrator
 
 import (
+	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
+	"slices"
 	"sync"
 	"time"
 
@@ -51,6 +54,8 @@ type Options struct {
 	FoldEvery int
 	// JobTimeout bounds each prove, fold and finalize job.
 	JobTimeout time.Duration
+	// JobPoll is how often a running job is polled (5s if unset).
+	JobPoll time.Duration
 }
 
 // Engine is the orchestrator's stateful core.
@@ -64,7 +69,9 @@ type Engine struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	// scheduler is nil in ingest-only mode (no worker pool configured).
+	// pool and scheduler are nil in ingest-only mode (no worker pool
+	// configured).
+	pool      *workers.WorkerManager
 	scheduler *Scheduler
 	// finalize proves an election's results with its decryption key:
 	// Scheduler.Finalize, nil in ingest-only mode.
@@ -78,6 +85,15 @@ type Engine struct {
 	// two concurrent decryption-key submissions cannot both finalize (the second
 	// would re-run the PLONK and its rollback-on-error could clobber Results).
 	finalizing sync.Map // electionID -> struct{}
+
+	// retries spaces the runs of failing background tasks.
+	retries *retries
+
+	// bg tracks the background goroutines (monitor, drains, finalizes) Stop
+	// waits for; bgStopped refuses new ones once Stop started.
+	bgMu      sync.Mutex
+	bg        sync.WaitGroup
+	bgStopped bool
 
 	mu       sync.RWMutex
 	runtimes map[string]*electionRuntime
@@ -134,17 +150,23 @@ func NewEngine(store *storage.Storage, opts Options) (*Engine, error) {
 		window:    opts.BatchTimeWindow,
 		ctx:       ctx,
 		cancel:    cancel,
+		retries:   newRetries(),
 		runtimes:  make(map[string]*electionRuntime),
 	}
 	if opts.Pool != nil {
-		e.scheduler = NewScheduler(e, opts.Pool, opts.FoldEvery, opts.JobTimeout)
+		e.pool = opts.Pool
+		e.scheduler = NewScheduler(e, opts.Pool, opts.FoldEvery, opts.JobTimeout, opts.JobPoll)
 		e.finalize = e.scheduler.Finalize
+		if err := e.restoreWorkers(); err != nil {
+			e.Stop()
+			return nil, fmt.Errorf("restore workers: %w", err)
+		}
 	}
 	if err := e.restore(); err != nil {
-		cancel()
+		e.Stop()
 		return nil, fmt.Errorf("restore elections: %w", err)
 	}
-	go e.monitor()
+	e.goBackground(e.monitor)
 	return e, nil
 }
 
@@ -152,12 +174,33 @@ func NewEngine(store *storage.Storage, opts Options) (*Engine, error) {
 // ingest-only mode.
 func (e *Engine) Scheduler() *Scheduler { return e.scheduler }
 
-// Stop halts the lifecycle monitor and any dispatch loops.
+// Stop halts the lifecycle monitor, the dispatch loops and the drains and
+// finalizes in flight, and waits for them to return.
 func (e *Engine) Stop() {
+	e.bgMu.Lock()
+	e.bgStopped = true
+	e.bgMu.Unlock()
 	e.cancel()
 	if e.scheduler != nil {
 		e.scheduler.Stop()
 	}
+	e.bg.Wait()
+}
+
+// goBackground runs fn in a goroutine Stop waits for. It returns false, and
+// does not run fn, once Stop started.
+func (e *Engine) goBackground(fn func()) bool {
+	e.bgMu.Lock()
+	defer e.bgMu.Unlock()
+	if e.bgStopped {
+		return false
+	}
+	e.bg.Add(1)
+	go func() {
+		defer e.bg.Done()
+		fn()
+	}()
+	return true
 }
 
 // restore rebuilds in-memory runtimes from persisted elections and snapshots.
@@ -168,6 +211,7 @@ func (e *Engine) restore() error {
 	}
 	for _, el := range elections {
 		if el.Status == types.StatusCanceled || el.Status == types.StatusResults {
+			e.deleteProofs(el.ID) // left by a stop right after the chain finished
 			continue
 		}
 		if el.Status == types.StatusFinalizing {
@@ -188,17 +232,35 @@ func (e *Engine) restore() error {
 			continue
 		}
 		e.runtimes[el.ID.String()] = rt
-		log.Infow("restored election", "election", el.ID.String(), "status", el.Status.String(), "root", rt.state.Root())
-		// Resume proving any persisted-but-undispatched batches.
-		if e.scheduler != nil {
-			e.scheduler.Notify(el.ID)
+		log.Infow("restored election", "election", el.ID.String(), "status", el.Status.String(),
+			"root", rt.state.Root(), "batches", rt.batchSeq, "pendingVotes", len(rt.pending))
+		// Resume the fold chain at the first monitor tick, once the pool has
+		// polled the provers; an ended election resumes its drain there.
+		if el.Status != types.StatusEnded {
+			e.retries.schedule(el.ID, taskDispatch)
 		}
 	}
 	return nil
 }
 
+// restoreWorkers adds the stored worker registrations to the pool.
+func (e *Engine) restoreWorkers() error {
+	regs, err := e.store.ListWorkers()
+	if err != nil {
+		return err
+	}
+	for _, r := range regs {
+		e.pool.AddWorker(r.Address, r.Name)
+	}
+	if len(regs) > 0 {
+		log.Infow("restored workers", "count", len(regs))
+	}
+	return nil
+}
+
 // runtimeFromStorage restores a single election's State from its latest
-// snapshot and recomputes the next batch sequence from persisted batches.
+// snapshot, recomputes the next batch sequence from persisted batches and
+// reloads the accepted votes no batch holds into the pending buffer.
 func (e *Engine) runtimeFromStorage(el *types.Election) (*electionRuntime, error) {
 	rules, err := newVoteRules(el.Config)
 	if err != nil {
@@ -217,6 +279,10 @@ func (e *Engine) runtimeFromStorage(el *types.Election) (*electionRuntime, error
 	if err != nil {
 		return nil, fmt.Errorf("list batches: %w", err)
 	}
+	pending, err := e.unsealedVotes(el.ID, batches)
+	if err != nil {
+		return nil, fmt.Errorf("pending votes: %w", err)
+	}
 	bs := el.BatchSize
 	if bs <= 0 {
 		bs = e.batchSize
@@ -226,9 +292,33 @@ func (e *Engine) runtimeFromStorage(el *types.Election) (*electionRuntime, error
 		cfg:       cfg,
 		rules:     rules,
 		state:     state,
+		pending:   pending,
 		batchSeq:  uint64(len(batches)),
 		batchSize: bs,
 	}, nil
+}
+
+// unsealedVotes returns the accepted votes of an election that no batch
+// holds, in submission order: the pending buffer of the previous run. A
+// vote's status moves from pending in the same write that seals its batch;
+// the batches are checked too.
+func (e *Engine) unsealedVotes(id types.ElectionID, batches []*types.BatchInput) ([]*types.Vote, error) {
+	votes, err := e.store.VotesWithStatus(id, types.VoteStatusPending)
+	if err != nil {
+		return nil, err
+	}
+	sealed := make(map[string]struct{})
+	for _, bi := range batches {
+		for _, voteID := range bi.VoteIDs {
+			sealed[string(voteID)] = struct{}{}
+		}
+	}
+	pending := slices.DeleteFunc(votes, func(v *types.Vote) bool {
+		_, ok := sealed[string(v.ID)]
+		return ok
+	})
+	slices.SortFunc(pending, func(a, b *types.Vote) int { return cmp.Compare(a.Seq, b.Seq) })
+	return pending, nil
 }
 
 // CreateElection validates the config, builds the genesis state, persists the
@@ -321,15 +411,60 @@ func (e *Engine) runtime(id types.ElectionID) (*electionRuntime, bool) {
 	return rt, ok
 }
 
-// AuditWorkerRegister records an admin worker-registration action. Worker
-// registration is not scoped to an election, so the election ID is empty.
-func (e *Engine) AuditWorkerRegister(subject, address string) {
+// RegisterWorker adds the prover at address to the pool and stores the
+// registration, so the pool is rebuilt on restart. Registering a known
+// address returns its worker, with the name filled in if it had none.
+func (e *Engine) RegisterWorker(subject, address, name string) (*workers.Worker, error) {
+	if e.pool == nil {
+		return nil, fmt.Errorf("no worker pool configured")
+	}
+	_, known := e.pool.GetWorker(address)
+	w := e.pool.AddWorker(address, name)
+	if err := e.store.SetWorker(&types.WorkerRegistration{Address: w.Address, Name: w.Name}); err != nil {
+		if !known {
+			e.pool.RemoveWorker(address)
+		}
+		return nil, fmt.Errorf("persist worker: %w", err)
+	}
 	e.audit(subject, "admin", "register_worker:"+address, types.ElectionID{})
+	return w, nil
 }
 
-// AuditWorkerRemove records an admin worker removal.
-func (e *Engine) AuditWorkerRemove(subject, address string) {
-	e.audit(subject, "admin", "remove_worker:"+address, types.ElectionID{})
+// RemoveWorker takes the worker with the given ID out of the pool and
+// deletes its registration. Its running jobs count as failed and go to other
+// workers; the fold chains pinned to it move to other workers.
+func (e *Engine) RemoveWorker(subject, workerID string) error {
+	if e.pool == nil {
+		return fmt.Errorf("%w: %s", ErrWorkerNotFound, workerID)
+	}
+	w, ok := e.pool.WorkerByID(workerID)
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrWorkerNotFound, workerID)
+	}
+	if err := e.store.DeleteWorker(w.Address); err != nil {
+		return fmt.Errorf("delete worker: %w", err)
+	}
+	e.pool.RemoveWorker(w.Address)
+	e.audit(subject, "admin", "remove_worker:"+w.Address, types.ElectionID{})
+	e.moveFoldChains(w.Address)
+	return nil
+}
+
+// moveFoldChains starts a dispatch pass for every open election whose fold
+// chain is pinned to the worker at address, which moves the chain.
+func (e *Engine) moveFoldChains(address string) {
+	e.mu.RLock()
+	ids := make([]types.ElectionID, 0, len(e.runtimes))
+	for _, rt := range e.runtimes {
+		ids = append(ids, rt.id)
+	}
+	e.mu.RUnlock()
+	for _, id := range ids {
+		if el, err := e.store.Election(id); err == nil && el.FoldWorker == address {
+			log.Infow("fold worker removed, moving the fold chain", "election", id.String(), "worker", address)
+			e.scheduler.Notify(id)
+		}
+	}
 }
 
 // audit appends an accountability record, logging on failure.
@@ -345,8 +480,9 @@ func (e *Engine) audit(subject, role, action string, id types.ElectionID) {
 	}
 }
 
-// monitor periodically advances the lifecycle: it seals stale partial batches
-// and ends the active and paused elections past their end time.
+// monitor periodically advances the lifecycle: it seals stale partial
+// batches, ends the active and paused elections past their end time, drains
+// the ended ones, and runs failed tasks again once their backoff has passed.
 func (e *Engine) monitor() {
 	ticker := time.NewTicker(monitorInterval)
 	defer ticker.Stop()
@@ -377,17 +513,43 @@ func (e *Engine) tick() {
 		switch el.Status {
 		case types.StatusActive, types.StatusPaused:
 			if !el.EndTime.IsZero() && time.Now().After(el.EndTime) {
-				if err := e.changeStatus(rt, "system", "system", types.StatusEnded); err != nil {
-					log.Warnw("failed to end election", "election", rt.id.String(), "error", err.Error())
-				}
+				e.endElection(rt)
 				continue
 			}
 			e.sealIfStale(rt)
+			e.retryDispatch(rt.id)
 		case types.StatusEnded:
 			// Drain the fold chain and publish the encrypted results. Runs in a
 			// guarded goroutine so the GPU-bound fold work never stalls the sweep.
-			go e.drainAndPublish(rt)
+			if e.retries.due(rt.id, taskDrain) {
+				e.goBackground(func() { e.drainAndPublish(rt) })
+			}
+		case types.StatusDecrypting:
+			e.retryDispatch(rt.id)
 		}
+	}
+}
+
+// endElection ends an election past its end time, backing off if that
+// fails.
+func (e *Engine) endElection(rt *electionRuntime) {
+	if !e.retries.due(rt.id, taskEnd) {
+		return
+	}
+	err := e.changeStatus(rt, "system", "system", types.StatusEnded)
+	switch {
+	case err == nil, errors.Is(err, ErrInvalidTransition): // ended meanwhile
+		e.retries.succeeded(rt.id, taskEnd)
+	default:
+		e.retries.failed(rt.id, taskEnd, err)
+	}
+}
+
+// retryDispatch starts a dispatch pass for an election whose last pass
+// failed, once its backoff has passed, or that was just restored.
+func (e *Engine) retryDispatch(id types.ElectionID) {
+	if e.scheduler != nil && e.retries.take(id, taskDispatch) {
+		e.scheduler.Notify(id)
 	}
 }
 

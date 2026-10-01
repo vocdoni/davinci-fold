@@ -22,6 +22,7 @@ import (
 // e(C', delta') = e(C, delta), so the rescaled proof verifies under the
 // rescaled key and not under the davinci-circom one, and the other way round.
 func TestBallotVKPerElection(t *testing.T) {
+	requireIntegration(t)
 	c := qt.New(t)
 
 	election, err := integration.NewElection(1)

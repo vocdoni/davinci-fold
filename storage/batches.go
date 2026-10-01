@@ -3,8 +3,15 @@ package storage
 import (
 	"time"
 
+	"github.com/vocdoni/davinci-node/db/prefixeddb"
+
 	"github.com/vocdoni/davinci-fold/types"
 )
+
+// blobRecord stores a byte blob (a state snapshot, a proof).
+type blobRecord struct {
+	Blob []byte `cbor:"blob"`
+}
 
 // SetBatchInput persists (or overwrites) a sealed batch's re-drivable input.
 func (s *Storage) SetBatchInput(b *types.BatchInput) error {
@@ -12,6 +19,47 @@ func (s *Storage) SetBatchInput(b *types.BatchInput) error {
 		b.SealedAt = time.Now()
 	}
 	return s.setArtifact(batchPrefix, subKey(b.ElectionID, seqBytes(b.Seq)), b)
+}
+
+// SealBatch persists a sealed batch, the state snapshot taken after it and
+// its votes' batched status in one write, so after a crash the batches, the
+// state and the vote statuses agree.
+func (s *Storage) SealBatch(b *types.BatchInput, snapshot []byte) error {
+	s.globalLock.Lock() // vote statuses are written under it
+	defer s.globalLock.Unlock()
+	if b.SealedAt.IsZero() {
+		b.SealedAt = time.Now()
+	}
+	batch, err := EncodeArtifact(b)
+	if err != nil {
+		return err
+	}
+	snap, err := EncodeArtifact(&blobRecord{Blob: snapshot})
+	if err != nil {
+		return err
+	}
+	batched, err := EncodeArtifact(&voteStatusRecord{Status: types.VoteStatusBatched})
+	if err != nil {
+		return err
+	}
+	tx := s.db.WriteTx()
+	defer tx.Discard()
+	if err := prefixeddb.NewPrefixedWriteTx(tx, batchPrefix).Set(subKey(b.ElectionID, seqBytes(b.Seq)), batch); err != nil {
+		return err
+	}
+	if err := prefixeddb.NewPrefixedWriteTx(tx, snapshotPrefix).Set(electionKey(b.ElectionID), snap); err != nil {
+		return err
+	}
+	statuses := prefixeddb.NewPrefixedWriteTx(tx, voteStatusPrefix)
+	for _, voteID := range b.VoteIDs {
+		if cur, err := s.VoteStatus(b.ElectionID, voteID); err == nil && !cur.CanMoveTo(types.VoteStatusBatched) {
+			continue
+		}
+		if err := statuses.Set(subKey(b.ElectionID, voteID), batched); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // BatchInput loads a batch input by election and sequence.
@@ -72,16 +120,12 @@ func (s *Storage) FoldCheckpoint(id types.ElectionID) (*types.FoldCheckpoint, er
 
 // SetSnapshot persists the latest chain.State snapshot blob for an election.
 func (s *Storage) SetSnapshot(id types.ElectionID, blob []byte) error {
-	return s.setArtifact(snapshotPrefix, electionKey(id), &struct {
-		Blob []byte `cbor:"blob"`
-	}{Blob: blob})
+	return s.setArtifact(snapshotPrefix, electionKey(id), &blobRecord{Blob: blob})
 }
 
 // Snapshot loads the latest state snapshot blob for an election.
 func (s *Storage) Snapshot(id types.ElectionID) ([]byte, error) {
-	var raw struct {
-		Blob []byte `cbor:"blob"`
-	}
+	var raw blobRecord
 	if err := s.getArtifact(snapshotPrefix, electionKey(id), &raw); err != nil {
 		return nil, err
 	}

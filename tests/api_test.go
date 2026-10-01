@@ -16,6 +16,7 @@ import (
 // the chi middleware stack: admin create, public read/list, keywarden gating,
 // and worker registration. It needs no prover workers.
 func TestAPILifecycle(t *testing.T) {
+	requireIntegration(t)
 	c := qt.New(t)
 	ctx := context.Background()
 	admin := helpers.AdminToken()
@@ -44,6 +45,7 @@ func TestAPILifecycle(t *testing.T) {
 // TestAPIAuthRejections verifies admin/keywarden routes answer 401 without a
 // token and 403 to a token of the wrong role.
 func TestAPIAuthRejections(t *testing.T) {
+	requireIntegration(t)
 	c := qt.New(t)
 	ctx := context.Background()
 
@@ -71,6 +73,7 @@ func TestAPIAuthRejections(t *testing.T) {
 // TestAPIElectionStatus pauses, resumes, ends and cancels elections over
 // HTTP; refused changes answer 409.
 func TestAPIElectionStatus(t *testing.T) {
+	requireIntegration(t)
 	c := qt.New(t)
 	ctx := context.Background()
 	admin := helpers.AdminToken()
@@ -113,6 +116,7 @@ func TestAPIElectionStatus(t *testing.T) {
 
 // TestWorkerRegistration registers a worker over the admin route and lists it.
 func TestWorkerRegistration(t *testing.T) {
+	requireIntegration(t)
 	c := qt.New(t)
 	ctx := context.Background()
 

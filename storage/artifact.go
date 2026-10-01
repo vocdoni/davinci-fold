@@ -20,6 +20,16 @@ func (s *Storage) setArtifact(prefix, key []byte, artifact any) error {
 	return wTx.Commit()
 }
 
+// deleteArtifact removes the artifact at prefix+key.
+func (s *Storage) deleteArtifact(prefix, key []byte) error {
+	wTx := prefixeddb.NewPrefixedDatabase(s.db, prefix).WriteTx()
+	defer wTx.Discard()
+	if err := wTx.Delete(key); err != nil {
+		return err
+	}
+	return wTx.Commit()
+}
+
 // getArtifact loads and decodes the artifact at prefix+key into out. Returns
 // ErrNotFound if the key is absent.
 func (s *Storage) getArtifact(prefix, key []byte, out any) error {

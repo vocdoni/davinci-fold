@@ -68,12 +68,14 @@ func setupServices(ctx context.Context, cfg *Config) (services *Services, err er
 	}
 	services.Storage = storage.New(storagedb)
 
-	log.Infow("starting orchestrator", "batchSize", cfg.Batch.Size, "foldEvery", cfg.Fold.Every)
+	log.Infow("starting orchestrator", "batchSize", cfg.Batch.Size, "foldEvery", cfg.Fold.Every,
+		"jobTimeout", cfg.Worker.JobTimeout.String())
 	services.Orchestrator, err = service.NewOrchestrator(ctx, service.OrchestratorConfig{
 		Storage:         services.Storage,
 		BatchSize:       cfg.Batch.Size,
 		BatchTimeWindow: cfg.Batch.Time,
 		FoldEvery:       cfg.Fold.Every,
+		JobTimeout:      cfg.Worker.JobTimeout,
 		WorkerPoll:      cfg.Worker.PollPeriod,
 	})
 	if err != nil {

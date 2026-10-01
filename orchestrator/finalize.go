@@ -53,72 +53,94 @@ func finalizeSummary(err error) string {
 	return errFinalizeInternal.Error()
 }
 
-// Finalize closes an election's chain: it drains any pending batches into the
-// fold head, decrypts the accumulators with privKey, runs the finalize +
-// final PLONK on the pinned fold worker, verifies the returned digest against
-// the local state (the same external checks chain.Sequencer.Finalize performs),
-// and persists the resulting Results. The privKey is the keywarden-provided
-// decryption scalar; it is used only here and never stored. An error wraps
-// the reason of the step that failed (see finalizeSummary).
+// Finalize closes an election's chain: it folds whatever the drain left,
+// decrypts the accumulators with privKey, runs the finalize + final PLONK on
+// the fold worker (moving the chain to another worker if it fails, as the
+// folds do), verifies the returned digest against the local state (the same
+// external checks chain.Sequencer.Finalize performs), and persists the
+// resulting Results. The privKey is the keywarden-provided decryption scalar;
+// it is used only here and never stored. An error wraps the reason of the
+// step that failed (see finalizeSummary).
 func (sc *Scheduler) Finalize(id types.ElectionID, privKey *big.Int) (*types.Results, error) {
 	rt, ok := sc.engine.runtime(id)
 	if !ok {
 		return nil, fmt.Errorf("unknown election %s", id.String())
 	}
-
-	// Drain any remaining imported batches into the fold head.
-	if err := sc.Fold(id); err != nil {
-		return nil, fmt.Errorf("%w: %w", errFinalFoldFailed, err)
-	}
-
+	m := sc.driveLock(id)
+	m.Lock()
+	defer m.Unlock()
 	fc, err := sc.chain(id)
 	if err != nil {
 		return nil, err
 	}
-	sc.mu.Lock()
-	lastFold, aggVK, batchVK, foldCount := fc.lastFold, fc.aggVK, fc.batchVK, fc.foldCount
-	w := fc.foldWorker
-	sc.mu.Unlock()
-	if lastFold == "" {
+	if err := sc.advance(id, fc, true); err != nil {
+		return nil, fmt.Errorf("%w: %w", errFinalFoldFailed, err)
+	}
+	if fc.lastFold == "" {
 		return nil, fmt.Errorf("%w: no fold in the chain", errNothingToFinalize)
 	}
 
 	// The election has ended: its state no longer changes.
 	state := rt.current()
-	chainCfg := *state.ChainConfig()
 	payload, results, err := state.ResultsPayload(privKey)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errDecryptionFailed, err)
 	}
 
-	finID, err := sc.runFinalize(w, &davinci.FinalizeRequest{
-		Config:  chainCfg,
-		FoldJob: lastFold,
-		FoldVK:  aggVK,
+	var res *types.Results
+	if err := sc.withFoldWorker(id, fc, func(w *workers.Worker) error {
+		var err error
+		res, err = sc.finalizeOn(id, fc, w, state, payload, results)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	if err := sc.store.SetResults(res); err != nil {
+		return nil, fmt.Errorf("persist results: %w", err)
+	}
+	return res, nil
+}
+
+// finalizeOn runs the finalize of the chain's last fold on the fold worker w
+// and checks its proof against the local state.
+func (sc *Scheduler) finalizeOn(id types.ElectionID, fc *foldChain, w *workers.Worker,
+	state *chain.State, payload *davinci.ResultsPayload, results []uint64,
+) (*types.Results, error) {
+	req := &davinci.FinalizeRequest{
+		Config:  *state.ChainConfig(),
+		FoldJob: fc.lastFold,
+		FoldVK:  fc.aggVK,
 		Results: *payload,
-	})
+	}
+	finID, err := sc.runJob(w, "finalize", func(c *davinci.Client) (string, error) { return c.SubmitFinalize(req) })
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errFinalProofFailed, err)
 	}
-
-	publics, err := w.Client().FetchPublics(finID)
-	if err != nil {
-		return nil, fmt.Errorf("%w: FetchPublics %s: %w", errFinalProofFailed, finID, err)
+	var (
+		publics []byte
+		snark   *davinci.PlonkSnark
+	)
+	if err := sc.call(w, "final proof", func(c *davinci.Client) error {
+		if publics, err = c.FetchPublics(finID); err != nil {
+			return err
+		}
+		snark, err = c.FetchSnark(finID)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("%w: job %s: %w", errFinalProofFailed, finID, err)
 	}
 	digest, err := chain.ParseDigest(publics)
 	if err != nil {
 		return nil, fmt.Errorf("%w: parse digest: %w", errFinalProofFailed, err)
 	}
-	snark, err := w.Client().FetchSnark(finID)
-	if err != nil {
-		return nil, fmt.Errorf("%w: FetchSnark %s: %w", errFinalProofFailed, finID, err)
-	}
-
-	if err := verifyFinalDigest(digest, snark, state, foldCount, batchVK, aggVK, results); err != nil {
+	if err := verifyFinalDigest(digest, snark, state, fc.foldCount, fc.batchVK, fc.aggVK, results); err != nil {
 		return nil, fmt.Errorf("%w: %w", errVerificationFailed, err)
 	}
-
-	res := &types.Results{
+	log.Infow("finalized election", "election", id.String(), "finalizeJob", finID, "worker", w.Address,
+		"tally", results, "aggVK", fc.aggVK, "batchVK", fc.batchVK,
+		"programVK", "0x"+hex.EncodeToString(snark.ProgramVK[:]),
+		"configCommitment", "0x"+hex.EncodeToString(digest.ConfigCommitment))
+	return &types.Results{
 		ElectionID:       id,
 		Tally:            results,
 		ProgramVK:        "0x" + hex.EncodeToString(snark.ProgramVK[:]),
@@ -126,14 +148,7 @@ func (sc *Scheduler) Finalize(id types.ElectionID, privKey *big.Int) (*types.Res
 		PublicValues:     "0x" + hex.EncodeToString(snark.PublicValues),
 		ProofBytes:       "0x" + hex.EncodeToString(snark.ProofBytes),
 		FinalizedAt:      time.Now(),
-	}
-	if err := sc.store.SetResults(res); err != nil {
-		return nil, fmt.Errorf("persist results: %w", err)
-	}
-	log.Infow("finalized election", "election", id.String(), "finalizeJob", finID, "tally", results,
-		"aggVK", aggVK, "batchVK", batchVK, "programVK", res.ProgramVK,
-		"configCommitment", "0x"+hex.EncodeToString(digest.ConfigCommitment))
-	return res, nil
+	}, nil
 }
 
 // verifyFinalDigest runs the external consistency and vk-binding checks against
@@ -197,27 +212,4 @@ func verifyFinalDigest(d *chain.Digest, snark *davinci.PlonkSnark, state *chain.
 		}
 	}
 	return nil
-}
-
-// runFinalize submits a finalize job to the fold worker and waits for it,
-// resubmitting the identical request on failure up to maxJobAttempts times.
-func (sc *Scheduler) runFinalize(w *workers.Worker, req *davinci.FinalizeRequest) (string, error) {
-	var lastErr error
-	for attempt := 1; attempt <= maxJobAttempts; attempt++ {
-		id, err := w.Client().SubmitFinalize(req)
-		if err != nil {
-			return "", fmt.Errorf("submit finalize: %w", err)
-		}
-		err = sc.waitJob(w, id)
-		if err == nil {
-			sc.pool.WorkerResult(w.Address, true)
-			return id, nil
-		}
-		lastErr = fmt.Errorf("finalize job %s (attempt %d/%d): %w", id, attempt, maxJobAttempts, err)
-		sc.pool.WorkerResult(w.Address, false)
-		if errors.Is(err, errWorkerRemoved) || sc.ctx.Err() != nil {
-			break
-		}
-	}
-	return "", lastErr
 }

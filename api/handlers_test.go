@@ -31,6 +31,7 @@ func TestEngineErrorCodes(t *testing.T) {
 		{orchestrator.ErrMalformedVote, ErrMalformedBody},
 		{orchestrator.ErrInvalidTransition, ErrInvalidStatusTransition},
 		{orchestrator.ErrInvalidDecryptionKey, ErrInvalidDecryptionKey},
+		{orchestrator.ErrWorkerNotFound, ErrWorkerNotFound},
 		{fmt.Errorf("persist vote: disk full"), ErrGenericInternalServerError},
 	} {
 		wrapped := fmt.Errorf("%w: detail", tc.err)
@@ -158,7 +159,8 @@ func TestDecryptionKeyEndpoint(t *testing.T) {
 	c.Assert(json.Unmarshal(rec.Body.Bytes(), &accepted), qt.IsNil)
 	c.Assert(accepted.ID, qt.Equals, id)
 
-	// This engine has no prover: the finalize fails, and the election says so.
+	// This election has no batch to finalize: the finalize fails, and the
+	// election says so.
 	deadline := time.Now().Add(5 * time.Second)
 	el := getElection(t, a, id)
 	for el.FinalizeError == "" && time.Now().Before(deadline) {
@@ -166,21 +168,30 @@ func TestDecryptionKeyEndpoint(t *testing.T) {
 		el = getElection(t, a, id)
 	}
 	c.Assert(el.Status, qt.Equals, "decrypting")
-	c.Assert(el.FinalizeError, qt.Equals, "prover unavailable")
+	c.Assert(el.FinalizeError, qt.Equals, "nothing to finalize")
 
 	// While finalizing, a key is refused.
 	c.Assert(store.SetElectionStatus(elID, types.StatusFinalizing), qt.IsNil)
 	assertError(t, submit("0x"+priv.Text(16)), ErrInvalidStatusTransition)
 }
 
-// TestRemoveWorker checks an admin can take a worker out of the pool by ID.
+// TestRemoveWorker checks a registration is stored, and that an admin can
+// take a worker out of the pool by ID, which deletes it.
 func TestRemoveWorker(t *testing.T) {
 	c := qt.New(t)
-	a := newTestAPI(t)
+	a, store := newTestAPIWithStore(t)
 	admin := mintToken(t, RoleAdmin, "ops")
 
-	rec := do(t, a, http.MethodPost, WorkerRegisterEndpoint, admin, &WorkerRegisterRequest{Address: "http://10.0.0.5:8080"})
+	for _, bad := range []string{"10.0.0.5:8080", "ftp://10.0.0.5", "http://"} {
+		assertError(t, do(t, a, http.MethodPost, WorkerRegisterEndpoint, admin, &WorkerRegisterRequest{Address: bad}), ErrMalformedWorkerInfo)
+	}
+	rec := do(t, a, http.MethodPost, WorkerRegisterEndpoint, admin, &WorkerRegisterRequest{Address: "http://10.0.0.5:8080", Name: "gpu-0"})
 	c.Assert(rec.Code, qt.Equals, http.StatusOK)
+	regs, err := store.ListWorkers()
+	c.Assert(err, qt.IsNil)
+	c.Assert(len(regs), qt.Equals, 1)
+	c.Assert(regs[0].Address, qt.Equals, "http://10.0.0.5:8080")
+	c.Assert(regs[0].Name, qt.Equals, "gpu-0")
 	var list WorkersResponse
 	c.Assert(json.Unmarshal(do(t, a, http.MethodGet, WorkersEndpoint, "", nil).Body.Bytes(), &list), qt.IsNil)
 	c.Assert(len(list.Workers), qt.Equals, 1)
@@ -191,6 +202,9 @@ func TestRemoveWorker(t *testing.T) {
 	c.Assert(do(t, a, http.MethodDelete, "/workers/"+workerID, admin, nil).Code, qt.Equals, http.StatusOK)
 	c.Assert(json.Unmarshal(do(t, a, http.MethodGet, WorkersEndpoint, "", nil).Body.Bytes(), &list), qt.IsNil)
 	c.Assert(len(list.Workers), qt.Equals, 0)
+	regs, err = store.ListWorkers()
+	c.Assert(err, qt.IsNil)
+	c.Assert(len(regs), qt.Equals, 0)
 	assertError(t, do(t, a, http.MethodDelete, "/workers/"+workerID, admin, nil), ErrWorkerNotFound)
 }
 

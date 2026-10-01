@@ -48,9 +48,10 @@ func (e *Engine) sealFullLocked(rt *electionRuntime) error {
 }
 
 // sealLocked seals the next batch of pending votes (see nextBatch), applies it
-// to the state tree and persists the exact, re-drivable batch prove request
-// plus the new state snapshot. A vote the state cannot apply is dropped from
-// the batch and marked as error (see applyBatch). The caller must hold rt.mu.
+// to the state tree and persists, in one write, the exact, re-drivable batch
+// prove request, the new state snapshot and the votes' batched status. A vote
+// the state cannot apply is dropped from the batch and marked as error (see
+// applyBatch). The caller must hold rt.mu.
 func (e *Engine) sealLocked(rt *electionRuntime) error {
 	// A seal that failed after changing the state left it ahead of the
 	// persisted snapshot.
@@ -131,32 +132,22 @@ func (e *Engine) sealLocked(rt *electionRuntime) error {
 		return fmt.Errorf("marshal prove request: %w", err)
 	}
 
+	snapshot, err := rt.state.Snapshot()
+	if err != nil {
+		return fmt.Errorf("snapshot: %w", err)
+	}
 	seq := rt.batchSeq
-	if err := e.store.SetBatchInput(&types.BatchInput{
+	if err := e.store.SealBatch(&types.BatchInput{
 		ElectionID:   rt.id,
 		Seq:          seq,
 		ProveRequest: reqBytes,
 		NewStateRoot: rt.state.Root(),
 		VoteIDs:      voteIDs,
 		SealedAt:     time.Now(),
-	}); err != nil {
+	}, snapshot); err != nil {
 		return fmt.Errorf("persist batch: %w", err)
 	}
-
-	snapshot, err := rt.state.Snapshot()
-	if err != nil {
-		return fmt.Errorf("snapshot: %w", err)
-	}
-	if err := e.store.SetSnapshot(rt.id, snapshot); err != nil {
-		return fmt.Errorf("persist snapshot: %w", err)
-	}
 	rt.dirty = false
-
-	for _, v := range sealed {
-		if err := e.store.SetVoteStatus(rt.id, v.ID, types.VoteStatusBatched); err != nil {
-			log.Warnw("failed to set vote batched", "vote", v.ID.String(), "error", err.Error())
-		}
-	}
 
 	rt.pending = rest
 	rt.batchSeq++

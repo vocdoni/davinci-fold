@@ -33,6 +33,7 @@ var engineErrors = []struct {
 	{orchestrator.ErrMalformedVote, ErrMalformedBody},
 	{orchestrator.ErrInvalidTransition, ErrInvalidStatusTransition},
 	{orchestrator.ErrInvalidDecryptionKey, ErrInvalidDecryptionKey},
+	{orchestrator.ErrWorkerNotFound, ErrWorkerNotFound},
 }
 
 // engineError maps an orchestrator error to its API error, keeping the

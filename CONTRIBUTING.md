@@ -34,8 +34,11 @@ The package layout is described in [docs/architecture.md](docs/architecture.md#c
 A few rules keep the service correct across crashes and restarts:
 
 - Persist before dispatching. Votes and batch prove requests are stored before any work is
-  sent to a prover, and fold checkpoints and state snapshots as soon as they change, so every
-  step can be driven again after a crash. New pipeline steps must keep dispatch idempotent.
+  sent to a prover, and fold checkpoints, state snapshots and the proofs a fold chain needs to
+  move as soon as they change, so every step can be driven again after a crash. Records that
+  must agree (a vote and its status; a batch, its snapshot and its votes' status; a fold's
+  checkpoint and proof) are stored in one write. New pipeline steps must keep dispatch
+  idempotent.
 - The state cannot be rebuilt by replaying votes, because re-encryption draws fresh randomness
   per batch. Anything that changes `chain.State` must persist a new snapshot.
 - Provers are not trusted. Values learned from a prover are checked at finalize against local

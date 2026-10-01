@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/url"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/vocdoni/davinci-fold/workers"
@@ -32,13 +33,21 @@ func (a *API) registerWorker(w http.ResponseWriter, r *http.Request) {
 		ErrMalformedWorkerInfo.With("missing worker address").Write(w)
 		return
 	}
-	worker := a.pool.AddWorker(req.Address, req.Name)
-	a.engine.AuditWorkerRegister(subject, req.Address)
+	if u, err := url.Parse(req.Address); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		ErrMalformedWorkerInfo.With("worker address must be an http(s) URL").Write(w)
+		return
+	}
+	worker, err := a.engine.RegisterWorker(subject, req.Address, req.Name)
+	if err != nil {
+		ErrGenericInternalServerError.WithErr(err).Write(w)
+		return
+	}
 	httpWriteJSON(w, worker.Info(workers.DefaultWorkerBanRules))
 }
 
-// removeWorker takes a prover worker out of the pool. Its running jobs count
-// as failed and are sent to other workers.
+// removeWorker takes a prover worker out of the pool and deletes its
+// registration. Its running jobs count as failed and are sent to other
+// workers, and the fold chains pinned to it move to other workers.
 // DELETE /workers/{workerID} (admin)
 func (a *API) removeWorker(w http.ResponseWriter, r *http.Request) {
 	subject := subjectFromContext(r.Context())
@@ -46,12 +55,9 @@ func (a *API) removeWorker(w http.ResponseWriter, r *http.Request) {
 		ErrWorkerNotFound.Write(w)
 		return
 	}
-	worker, ok := a.pool.WorkerByID(chi.URLParam(r, WorkerURLParam))
-	if !ok {
-		ErrWorkerNotFound.Write(w)
+	if err := a.engine.RemoveWorker(subject, chi.URLParam(r, WorkerURLParam)); err != nil {
+		engineError(err).Write(w)
 		return
 	}
-	a.pool.RemoveWorker(worker.Address)
-	a.engine.AuditWorkerRemove(subject, worker.Address)
 	httpWriteOK(w)
 }

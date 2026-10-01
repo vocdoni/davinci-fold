@@ -2,8 +2,9 @@
 // owns the election records and lifecycle state, the ordered vote log and
 // per-vote status, the exact per-batch prove inputs, the fold-chain
 // checkpoints, the State snapshots, the decrypted results and the audit trail,
-// plus the reservation/recovery bookkeeping that lets the orchestrator survive
-// restarts and worker death.
+// the proofs a fold chain needs to move to another worker, the worker
+// registrations, plus the reservation/recovery bookkeeping that lets the
+// orchestrator survive restarts and worker death.
 //
 // It mirrors davinci-node's storage conventions: prefixed namespaces over a
 // single db.Database, CBOR artifact encoding, a reservation sub-namespace that
@@ -46,6 +47,8 @@ var (
 	snapshotPrefix   = []byte("ss/")   // electionID → State snapshot blob
 	resultsPrefix    = []byte("rs/")   // electionID → Results
 	auditPrefix      = []byte("au/")   // ts+seq → AuditRecord
+	proofPrefix      = []byte("pf/")   // electionID + "b" + seq → batch proof.bin; electionID + "f" → last fold proof.bin
+	workerPrefix     = []byte("wk/")   // worker address → WorkerRegistration
 )
 
 // reservationBasePrefixes are the artifact namespaces that carry reservations,

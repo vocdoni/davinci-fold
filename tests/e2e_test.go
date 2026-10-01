@@ -29,11 +29,12 @@ import (
 	spectestutil "github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/spec/testutil"
 )
 
-// requireWorkers skips the calling test unless at least n prover workers were
-// supplied via DAVINCI_FOLD_WORKER_URLS. The scatter/gather and chaos tests
-// need real GPU provers and cannot run without them.
+// requireWorkers skips the calling test unless the integration suite is
+// enabled with at least n prover workers in DAVINCI_FOLD_WORKER_URLS: the
+// end-to-end test needs real GPU provers.
 func requireWorkers(t *testing.T, n int) {
 	t.Helper()
+	requireIntegration(t)
 	if len(workerURLs) < n {
 		t.Skipf("needs >=%d prover workers in DAVINCI_FOLD_WORKER_URLS (have %d)", n, len(workerURLs))
 	}
@@ -263,20 +264,7 @@ func expectedChainTally(nBatches, batchSize, overwriteBatches int) [davinci.NumF
 		}
 		seedBase := int64(42 + 100*b)
 		for i := 0; i < batchSize; i++ {
-			seed := seedBase + int64(i)
-			var fields [davinci.NumFields]int64
-			stored := map[int64]bool{}
-			for f := int64(0); f < spectestutil.BallotNumFields; f++ {
-				for attempt := int64(0); ; attempt++ {
-					val := (seed + f*1000 + attempt) % 16
-					if !stored[val] {
-						fields[f] = val
-						stored[val] = true
-						break
-					}
-				}
-			}
-			lastFields[voterStart+i] = fields
+			lastFields[voterStart+i] = ballotFields(seedBase + int64(i))
 		}
 	}
 	var totals [davinci.NumFields]uint64
@@ -286,6 +274,24 @@ func expectedChainTally(nBatches, batchSize, overwriteBatches int) [davinci.NumF
 		}
 	}
 	return totals
+}
+
+// ballotFields is the plaintext of the deterministic ballot made with seed,
+// as BallotProofForTestDeterministic draws it.
+func ballotFields(seed int64) [davinci.NumFields]int64 {
+	var fields [davinci.NumFields]int64
+	stored := map[int64]bool{}
+	for f := int64(0); f < spectestutil.BallotNumFields; f++ {
+		for attempt := int64(0); ; attempt++ {
+			val := (seed + f*1000 + attempt) % 16
+			if !stored[val] {
+				fields[f] = val
+				stored[val] = true
+				break
+			}
+		}
+	}
+	return fields
 }
 
 // envInt reads an integer environment variable with a default.

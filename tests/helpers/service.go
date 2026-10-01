@@ -40,18 +40,24 @@ type Options struct {
 	BatchTimeWindow time.Duration
 	FoldEvery       int
 	JobTimeout      time.Duration
-	WorkerURLs      []string // prover-worker base URLs to register up front
+	JobPoll         time.Duration // job poll interval (orchestrator default if zero)
+	WorkerPoll      time.Duration // prover health-poll interval (1s if zero)
+	WorkerURLs      []string      // prover-worker base URLs to add up front, unstored
 }
 
 // NewTestServices boots storage, the worker pool, the engine, and the HTTP API
-// against tempDir, registering any provided worker URLs. The returned cleanup
-// stops the services and closes storage.
+// against tempDir, adding any provided worker URLs to the pool. Booting again
+// on the same tempDir restarts the orchestrator from its storage. The
+// returned cleanup stops the services and closes storage.
 func NewTestServices(ctx context.Context, tempDir string, opts Options) (*TestServices, func(), error) {
 	if opts.BatchSize <= 0 {
 		opts.BatchSize = 2
 	}
 	if opts.FoldEvery <= 0 {
 		opts.FoldEvery = 1
+	}
+	if opts.WorkerPoll <= 0 {
+		opts.WorkerPoll = time.Second
 	}
 
 	kv, err := metadb.New(db.TypePebble, tempDir)
@@ -60,24 +66,25 @@ func NewTestServices(ctx context.Context, tempDir string, opts Options) (*TestSe
 	}
 	store := storage.New(kv)
 
-	pool := workers.NewWorkerManager(workers.DefaultWorkerBanRules, time.Second)
-	pool.Start(ctx)
+	// As the service does: the engine adds the stored registrations to the
+	// pool, then the pool starts polling.
+	pool := workers.NewWorkerManager(workers.DefaultWorkerBanRules, opts.WorkerPoll)
 	for _, url := range opts.WorkerURLs {
 		pool.AddWorker(url, "")
 	}
-
 	engine, err := orchestrator.NewEngine(store, orchestrator.Options{
 		BatchSize:       opts.BatchSize,
 		BatchTimeWindow: opts.BatchTimeWindow,
 		Pool:            pool,
 		FoldEvery:       opts.FoldEvery,
 		JobTimeout:      opts.JobTimeout,
+		JobPoll:         opts.JobPoll,
 	})
 	if err != nil {
-		pool.Stop()
 		store.Close()
 		return nil, nil, fmt.Errorf("build engine: %w", err)
 	}
+	pool.Start(ctx)
 
 	port, err := freePort()
 	if err != nil {
