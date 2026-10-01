@@ -41,9 +41,9 @@ func TestElectionCRUD(t *testing.T) {
 	defer s.Close()
 
 	e := sampleElection()
-	c.Assert(s.CreateElection(e), qt.IsNil)
+	c.Assert(s.CreateElection(e, nil), qt.IsNil)
 	// Duplicate create rejected.
-	c.Assert(s.CreateElection(e), qt.Equals, ErrKeyAlreadyExists)
+	c.Assert(s.CreateElection(e, nil), qt.Equals, ErrKeyAlreadyExists)
 
 	got, err := s.Election(e.ID)
 	c.Assert(err, qt.IsNil)
@@ -83,7 +83,7 @@ func TestVoteLogAndDedup(t *testing.T) {
 	defer s.Close()
 
 	e := sampleElection()
-	c.Assert(s.CreateElection(e), qt.IsNil)
+	c.Assert(s.CreateElection(e, nil), qt.IsNil)
 
 	v1 := &types.Vote{ID: types.VoteID("vote-1"), Slot: 0x10}
 	v2 := &types.Vote{ID: types.VoteID("vote-2"), Slot: 0x11}
@@ -145,7 +145,7 @@ func TestBatchReservationAndRecovery(t *testing.T) {
 
 	s := New(database)
 	e := sampleElection()
-	c.Assert(s.CreateElection(e), qt.IsNil)
+	c.Assert(s.CreateElection(e, nil), qt.IsNil)
 
 	b := &types.BatchInput{ElectionID: e.ID, Seq: 0, NewStateRoot: "0xabcd"}
 	c.Assert(s.SetBatchInput(b), qt.IsNil)
@@ -175,7 +175,8 @@ func TestFoldCheckpointSnapshotResultsAudit(t *testing.T) {
 	s := newTestStorage(t)
 	defer s.Close()
 	e := sampleElection()
-	c.Assert(s.CreateElection(e), qt.IsNil)
+	blob := []byte("snapshot-bytes")
+	c.Assert(s.CreateElection(e, blob), qt.IsNil)
 
 	cp := &types.FoldCheckpoint{ElectionID: e.ID, FoldCount: 3, StateRoot: "0x99", LastFoldJob: "job-9"}
 	c.Assert(s.SetFoldCheckpoint(cp), qt.IsNil)
@@ -184,8 +185,6 @@ func TestFoldCheckpointSnapshotResultsAudit(t *testing.T) {
 	c.Assert(gotCP.FoldCount, qt.Equals, uint64(3))
 	c.Assert(gotCP.LastFoldJob, qt.Equals, "job-9")
 
-	blob := []byte("snapshot-bytes")
-	c.Assert(s.SetSnapshot(e.ID, blob), qt.IsNil)
 	gotBlob, err := s.Snapshot(e.ID)
 	c.Assert(err, qt.IsNil)
 	c.Assert(gotBlob, qt.DeepEquals, blob)

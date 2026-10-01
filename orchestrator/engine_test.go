@@ -484,6 +484,37 @@ func TestCreateElectionVK(t *testing.T) {
 	c.Assert(e.CreateElection("admin", el), qt.ErrorMatches, "invalid election config: vk: want 3 public inputs, got 2")
 }
 
+// TestCreateElectionBatchSize checks an election without a batch size takes
+// the engine default, and one outside 2..MaxBatchSize is refused.
+func TestCreateElectionBatchSize(t *testing.T) {
+	e, s := newTestEngine(t)
+	defer e.Stop()
+	for i, tc := range []struct {
+		size    int
+		want    int
+		wantErr string
+	}{
+		{size: 0, want: 2},
+		{size: 1, wantErr: "batch size 1 is below the minimum 2"},
+		{size: 3, want: 3},
+		{size: davinci.MaxBatchSize, want: davinci.MaxBatchSize},
+		{size: davinci.MaxBatchSize + 1, wantErr: "exceeds circuit maximum"},
+	} {
+		el, _ := testElection(t, byte(0x70+i), time.Now().Add(time.Hour))
+		el.BatchSize = tc.size
+		err := e.CreateElection("admin", el)
+		assertErr(t, err, tc.wantErr)
+		if tc.wantErr != "" {
+			_, err := s.Election(el.ID)
+			qt.Assert(t, err, qt.ErrorIs, storage.ErrNotFound)
+			continue
+		}
+		got, err := s.Election(el.ID)
+		qt.Assert(t, err, qt.IsNil)
+		qt.Assert(t, got.BatchSize, qt.Equals, tc.want)
+	}
+}
+
 // canonicalCircomVK is the davinci-circom key as elections store it.
 func canonicalCircomVK(t *testing.T) json.RawMessage {
 	t.Helper()

@@ -63,9 +63,11 @@ func (s *scatter) proof(i int) ([]byte, error) {
 }
 
 // start starts getting the proofs of the batches from position i on, as many
-// as the pool has workers that can take a job, and of every batch with a
-// prove job a previous run left. Those jobs are claimed before any new prove
-// starts, so none is sent to a worker that still runs one.
+// as the pool has workers that can take a job. If a batch past those has a
+// prove job a previous run left, the window extends to the last such batch:
+// every batch up to it is started, those without a job too. The left jobs
+// are claimed before any new prove starts, so none is sent to a worker that
+// still runs one.
 func (s *scatter) start(i int) {
 	// ponytail: new proves run at most one pool's worth of batches ahead of
 	// the gather, so a slow batch idles the rest of the pool for this

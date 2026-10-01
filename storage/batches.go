@@ -118,11 +118,6 @@ func (s *Storage) FoldCheckpoint(id types.ElectionID) (*types.FoldCheckpoint, er
 	return &c, nil
 }
 
-// SetSnapshot persists the latest chain.State snapshot blob for an election.
-func (s *Storage) SetSnapshot(id types.ElectionID, blob []byte) error {
-	return s.setArtifact(snapshotPrefix, electionKey(id), &blobRecord{Blob: blob})
-}
-
 // Snapshot loads the latest state snapshot blob for an election.
 func (s *Storage) Snapshot(id types.ElectionID) ([]byte, error) {
 	var raw blobRecord

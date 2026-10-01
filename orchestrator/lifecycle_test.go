@@ -426,7 +426,7 @@ func TestEffectiveFoldEvery(t *testing.T) {
 	c.Assert(stored.FoldEvery, qt.Equals, 3)
 
 	legacy := &types.Election{ID: types.ElectionID{0x68}, Status: types.StatusActive, BatchSize: 2}
-	c.Assert(s.CreateElection(legacy), qt.IsNil)
+	c.Assert(s.CreateElection(legacy, nil), qt.IsNil)
 	got, err := e.Election(legacy.ID)
 	c.Assert(err, qt.IsNil)
 	c.Assert(got.FoldEvery, qt.Equals, 3)

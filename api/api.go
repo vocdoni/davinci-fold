@@ -21,6 +21,16 @@ import (
 
 const maxRequestBodyLog = 512 // Maximum request-body length to log.
 
+// Server timeouts: a request's headers must arrive within readHeaderTimeout,
+// so slow-header clients cannot hold connections open, and the whole request
+// within readTimeout, room for a body at the 1 MiB cap over a slow link; an
+// idle keep-alive connection is closed after idleTimeout.
+const (
+	readHeaderTimeout = 10 * time.Second
+	readTimeout       = 2 * time.Minute
+	idleTimeout       = 2 * time.Minute
+)
+
 // Config is the API server configuration.
 type Config struct {
 	Host      string
@@ -64,10 +74,16 @@ func New(ctx context.Context, conf *Config) (*API, error) {
 	}
 	a.initRouter()
 
+	srv := &http.Server{
+		Addr:              fmt.Sprintf("%s:%d", conf.Host, conf.Port),
+		Handler:           a.router,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		IdleTimeout:       idleTimeout,
+	}
 	go func() {
-		addr := fmt.Sprintf("%s:%d", conf.Host, conf.Port)
 		log.Infow("starting API server", "host", conf.Host, "port", conf.Port)
-		if err := http.ListenAndServe(addr, a.router); err != nil {
+		if err := srv.ListenAndServe(); err != nil {
 			log.Fatalf("failed to start the API server: %v", err)
 		}
 	}()

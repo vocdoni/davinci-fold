@@ -3,12 +3,14 @@ package storage
 import (
 	"time"
 
+	"github.com/vocdoni/davinci-node/db/prefixeddb"
+
 	"github.com/vocdoni/davinci-fold/types"
 )
 
-// CreateElection persists a new election, failing if one with the same ID
-// already exists.
-func (s *Storage) CreateElection(e *types.Election) error {
+// CreateElection persists a new election and its genesis state snapshot in
+// one write, failing if an election with the same ID already exists.
+func (s *Storage) CreateElection(e *types.Election, snapshot []byte) error {
 	s.globalLock.Lock()
 	defer s.globalLock.Unlock()
 
@@ -20,7 +22,23 @@ func (s *Storage) CreateElection(e *types.Election) error {
 	now := time.Now()
 	e.CreatedAt = now
 	e.UpdatedAt = now
-	return s.setArtifact(electionPrefix, key, e)
+	election, err := EncodeArtifact(e)
+	if err != nil {
+		return err
+	}
+	snap, err := EncodeArtifact(&blobRecord{Blob: snapshot})
+	if err != nil {
+		return err
+	}
+	tx := s.db.WriteTx()
+	defer tx.Discard()
+	if err := prefixeddb.NewPrefixedWriteTx(tx, electionPrefix).Set(key, election); err != nil {
+		return err
+	}
+	if err := prefixeddb.NewPrefixedWriteTx(tx, snapshotPrefix).Set(key, snap); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Election loads an election by ID.

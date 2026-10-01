@@ -148,8 +148,9 @@ results, prover registrations and an audit log of admin, keywarden and system ac
 
 The state is restored from snapshots rather than rebuilt from the vote log because each batch
 draws fresh re-encryption randomness, so replaying the votes would not reproduce the same
-state. A vote and its status are stored in one write, and so are a sealed batch, the snapshot
-after it and its votes' status, so a crash never leaves them apart.
+state. A new election and its genesis snapshot are stored in one write, as are a vote and its
+status, and a sealed batch, the snapshot after it and its votes' status, so a crash never leaves
+them apart.
 
 davinci-fold can stop at any point and resume. On start it reloads the worker registrations,
 then every election that is still open:

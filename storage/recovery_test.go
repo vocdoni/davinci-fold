@@ -30,7 +30,7 @@ func onBackends(t *testing.T, test func(c *qt.C, s *Storage)) {
 func TestSealBatch(t *testing.T) {
 	onBackends(t, func(c *qt.C, s *Storage) {
 		e := sampleElection()
-		c.Assert(s.CreateElection(e), qt.IsNil)
+		c.Assert(s.CreateElection(e, nil), qt.IsNil)
 		v1 := &types.Vote{ID: types.VoteID("vote-1")}
 		v2 := &types.Vote{ID: types.VoteID("vote-2")}
 		c.Assert(s.AddVote(e.ID, v1), qt.IsNil)
@@ -53,6 +53,32 @@ func TestSealBatch(t *testing.T) {
 	})
 }
 
+// TestCreateElection checks an election and its genesis snapshot are stored
+// together, and an election with a taken ID writes neither.
+func TestCreateElection(t *testing.T) {
+	onBackends(t, func(c *qt.C, s *Storage) {
+		e := sampleElection()
+		c.Assert(s.CreateElection(e, []byte("genesis")), qt.IsNil)
+		got, err := s.Election(e.ID)
+		c.Assert(err, qt.IsNil)
+		c.Assert(got.BatchSize, qt.Equals, 64)
+		c.Assert(got.CreatedAt.IsZero(), qt.IsFalse)
+		snap, err := s.Snapshot(e.ID)
+		c.Assert(err, qt.IsNil)
+		c.Assert(string(snap), qt.Equals, "genesis")
+
+		dup := sampleElection()
+		dup.BatchSize = 8
+		c.Assert(s.CreateElection(dup, []byte("other")), qt.Equals, ErrKeyAlreadyExists)
+		got, err = s.Election(e.ID)
+		c.Assert(err, qt.IsNil)
+		c.Assert(got.BatchSize, qt.Equals, 64)
+		snap, err = s.Snapshot(e.ID)
+		c.Assert(err, qt.IsNil)
+		c.Assert(string(snap), qt.Equals, "genesis")
+	})
+}
+
 // TestVotesWithStatus checks votes are found by status, and that AddVote
 // stores each with pending status.
 func TestVotesWithStatus(t *testing.T) {
@@ -60,8 +86,8 @@ func TestVotesWithStatus(t *testing.T) {
 		e := sampleElection()
 		other := sampleElection()
 		other.ID = types.ElectionID{0x01, 0x02, 0x03, 0x04}
-		c.Assert(s.CreateElection(e), qt.IsNil)
-		c.Assert(s.CreateElection(other), qt.IsNil)
+		c.Assert(s.CreateElection(e, nil), qt.IsNil)
+		c.Assert(s.CreateElection(other, nil), qt.IsNil)
 		for _, id := range []string{"a", "b", "c"} {
 			c.Assert(s.AddVote(e.ID, &types.Vote{ID: types.VoteID(id)}), qt.IsNil)
 		}
@@ -80,12 +106,13 @@ func TestVotesWithStatus(t *testing.T) {
 
 // TestCommitFoldAndProofs checks a fold commit stores the checkpoint and the
 // fold proof and drops the proofs of the folded batches, that a batch reset
-// drops its proof, and that the proofs of an election are dropped together.
+// drops its proof, that a batch's proof is dropped alone, and that the proofs
+// of an election are dropped together.
 func TestCommitFoldAndProofs(t *testing.T) {
 	onBackends(t, func(c *qt.C, s *Storage) {
 		e := sampleElection()
 		other := types.ElectionID{0x01, 0x02, 0x03, 0x04}
-		c.Assert(s.CreateElection(e), qt.IsNil)
+		c.Assert(s.CreateElection(e, nil), qt.IsNil)
 		_, err := s.FoldProof(e.ID)
 		c.Assert(err, qt.ErrorIs, ErrNotFound)
 		for seq := range uint64(3) {
@@ -119,6 +146,13 @@ func TestCommitFoldAndProofs(t *testing.T) {
 		c.Assert(err, qt.IsNil)
 		c.Assert(bi.NewStateRoot, qt.Equals, "0x02")
 		c.Assert(s.SetBatchProof(e.ID, 2, []byte{2}), qt.IsNil)
+		c.Assert(s.SetBatchProof(e.ID, 3, []byte{3}), qt.IsNil)
+		c.Assert(s.DeleteBatchProof(e.ID, 3), qt.IsNil)
+		_, err = s.BatchProof(e.ID, 3)
+		c.Assert(err, qt.ErrorIs, ErrNotFound)
+		proof, err = s.BatchProof(e.ID, 2)
+		c.Assert(err, qt.IsNil)
+		c.Assert(proof, qt.DeepEquals, []byte{2})
 
 		c.Assert(s.DeleteProofs(e.ID), qt.IsNil)
 		_, err = s.FoldProof(e.ID)

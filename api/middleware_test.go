@@ -2,7 +2,9 @@ package api
 
 import (
 	"cmp"
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -170,4 +172,59 @@ func TestLogRedaction(t *testing.T) {
 	c.Assert(logged, qt.Not(qt.Contains), "api request")
 	c.Assert(logged, qt.Not(qt.Contains), "api response")
 	c.Assert(logged, qt.Not(qt.Contains), "API error response")
+}
+
+// capBody is a request body over maxRequestBody: an unterminated JSON string
+// that fails once read past maxRequestBody. read counts the bytes read.
+type capBody struct{ read int }
+
+func (b *capBody) Read(p []byte) (int, error) {
+	const prefix = `{"proof":"`
+	if b.read >= maxRequestBody {
+		return 0, errors.New("body read past the cap")
+	}
+	n := min(len(p), maxRequestBody-b.read)
+	for i := range n {
+		p[i] = 'a'
+		if pos := b.read + i; pos < len(prefix) {
+			p[i] = prefix[pos]
+		}
+	}
+	b.read += n
+	return n, nil
+}
+
+// TestLogBodyCap checks debug logging reads ahead only the part of a request
+// body it logs, so a body over the handlers' cap is never read past it and is
+// rejected as with logging off.
+func TestLogBodyCap(t *testing.T) {
+	c := qt.New(t)
+	logPath := logToFile(t)
+	a := newTestAPI(t)
+	oversized := func() (*http.Request, *capBody) {
+		body := &capBody{}
+		req := httptest.NewRequest(http.MethodPost, "/elections/5eed01/votes", body)
+		req.ContentLength = 16 * maxRequestBody
+		return req, body
+	}
+
+	DisabledLogging = true
+	req, body := oversized()
+	assertError(t, serve(a, req), ErrMalformedBody)
+	c.Assert(body.read, qt.Equals, maxRequestBody)
+
+	DisabledLogging = false
+	req, body = oversized()
+	assertError(t, serve(a, req), ErrMalformedBody)
+	c.Assert(body.read, qt.Equals, maxRequestBody)
+	logged, _ := readLog(t, logPath, 0)
+	c.Assert(logged, qt.Contains, "{proof:aaa")
+
+	req, body = oversized()
+	readAhead := -1
+	logging := loggingMiddleware(maxRequestBodyLog, func(*http.Request) bool { return false })
+	logging(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		readAhead = body.read
+	})).ServeHTTP(httptest.NewRecorder(), req)
+	c.Assert(readAhead, qt.Equals, maxRequestBodyLog+1)
 }

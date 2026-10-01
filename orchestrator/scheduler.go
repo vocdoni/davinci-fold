@@ -504,6 +504,14 @@ func (sc *Scheduler) batchProof(id types.ElectionID, bi *types.BatchInput, held 
 	if err := sc.store.SetBatchProof(id, bi.Seq, proof); err != nil {
 		return nil, fmt.Errorf("persist proof: %w", err)
 	}
+	// If the election stopped since the check above, its proofs may have been
+	// dropped before this one was stored: drop it too (restore does, if this
+	// fails).
+	if sc.stopped(id) {
+		if err := sc.store.DeleteBatchProof(id, bi.Seq); err != nil {
+			log.Warnw("failed to delete stored proof", "election", id.String(), "seq", bi.Seq, "error", err.Error())
+		}
+	}
 	return proof, nil
 }
 

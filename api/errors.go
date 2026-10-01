@@ -32,7 +32,8 @@ func (e Error) MarshalJSON() ([]byte, error) {
 				return e.Err.Error()
 			}(),
 			Code: e.Code,
-		})
+		},
+	)
 }
 
 // Error returns the message contained inside the Error.

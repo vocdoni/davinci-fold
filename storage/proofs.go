@@ -28,6 +28,11 @@ func (s *Storage) SetBatchProof(id types.ElectionID, seq uint64, proof []byte) e
 	return s.setArtifact(proofPrefix, batchProofKey(id, seq), &blobRecord{Blob: proof})
 }
 
+// DeleteBatchProof drops a batch's stored proof.bin.
+func (s *Storage) DeleteBatchProof(id types.ElectionID, seq uint64) error {
+	return s.deleteArtifact(proofPrefix, batchProofKey(id, seq))
+}
+
 // BatchProof returns a batch's stored proof.bin, ErrNotFound if the batch is
 // not proved yet or already folded.
 func (s *Storage) BatchProof(id types.ElectionID, seq uint64) ([]byte, error) {

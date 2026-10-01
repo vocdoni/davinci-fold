@@ -25,6 +25,10 @@ import (
 	"github.com/vocdoni/davinci-zkvm/go-sdk/vocdoni/circuits/ballotproof"
 )
 
+// minBatchSize is the smallest batch size an election can have, the bound
+// --batch.size has too.
+const minBatchSize = 2
+
 // Default sealing parameters.
 const (
 	defaultBatchSize       = 64
@@ -322,9 +326,9 @@ func (e *Engine) unsealedVotes(id types.ElectionID, batches []*types.BatchInput)
 }
 
 // CreateElection validates the config, builds the genesis state, persists the
-// election as Active and its genesis snapshot, and registers the runtime. An
-// election without a vk gets the davinci-circom ballot-proof key; the vk is
-// stored re-encoded as the provers parse it (see parseBallotVK).
+// election as Active with its genesis snapshot in one write, and registers the
+// runtime. An election without a vk gets the davinci-circom ballot-proof key;
+// the vk is stored re-encoded as the provers parse it (see parseBallotVK).
 func (e *Engine) CreateElection(subject string, el *types.Election) error {
 	if len(el.Config.VK) == 0 || string(el.Config.VK) == "null" {
 		el.Config.VK = ballotproof.CircomVerificationKey
@@ -354,15 +358,15 @@ func (e *Engine) CreateElection(subject string, el *types.Election) error {
 	if el.FoldEvery <= 0 {
 		el.FoldEvery = e.foldEvery
 	}
+	if el.BatchSize < minBatchSize {
+		return fmt.Errorf("batch size %d is below the minimum %d", el.BatchSize, minBatchSize)
+	}
 	if el.BatchSize > davinci.MaxBatchSize {
 		return fmt.Errorf("batch size %d exceeds circuit maximum %d", el.BatchSize, davinci.MaxBatchSize)
 	}
 	el.Status = types.StatusActive
-	if err := e.store.CreateElection(el); err != nil {
+	if err := e.store.CreateElection(el, snapshot); err != nil {
 		return err
-	}
-	if err := e.store.SetSnapshot(el.ID, snapshot); err != nil {
-		return fmt.Errorf("persist snapshot: %w", err)
 	}
 	e.mu.Lock()
 	e.runtimes[el.ID.String()] = &electionRuntime{id: el.ID, cfg: cfg, rules: rules, state: state, batchSize: el.BatchSize}

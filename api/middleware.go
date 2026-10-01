@@ -67,7 +67,9 @@ func responseLogged(w http.ResponseWriter) bool {
 
 // loggingMiddleware provides request/response logging for debugging. Headers
 // are never logged, and neither are the bodies of the requests redacted
-// reports (and of their responses, see httpWriteJSON).
+// reports (and of their responses, see httpWriteJSON). Only the part of a
+// body it logs is read ahead: the handler reads those bytes and then the rest
+// of the body, under its own limit.
 func loggingMiddleware(maxBodyLog int, redacted func(*http.Request) bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -81,13 +83,13 @@ func loggingMiddleware(maxBodyLog int, redacted func(*http.Request) bool) func(h
 			if redact {
 				bodyStr = "(redacted)"
 			} else if r.Body != nil && r.ContentLength > 0 {
-				bodyBytes, err := io.ReadAll(r.Body)
+				bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBodyLog)+1))
 				if err != nil {
 					log.Error(err)
 					http.Error(w, "unable to read request body", http.StatusInternalServerError)
 					return
 				}
-				r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+				r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(bodyBytes), r.Body))
 				if jsonRegex.Match(bodyBytes) {
 					bodyStr = string(bodyBytes)
 					if len(bodyStr) > maxBodyLog {

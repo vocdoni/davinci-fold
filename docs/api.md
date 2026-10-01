@@ -48,7 +48,7 @@ Returns `200` with an empty body while the service is up.
 | `censusRoot` | hex | Census root every vote's census proof must reach, a BN254 field element. |
 | `vk` | object | Optional. Ballot-proof verification key (snarkjs JSON, three public signals) that ingest and the provers check ballot proofs against. Defaults to the davinci-circom `v1.0.0` key. Stored re-encoded in canonical snarkjs form. |
 | `endTime` | RFC 3339 | When the election closes. Without it the election never ends. |
-| `batchSize` | number | Optional. Overrides `--batch.size`, at most 1024. |
+| `batchSize` | number | Optional. Overrides `--batch.size`, 2 to 1024. |
 | `foldEvery` | number | Optional. Overrides `--fold.every`. |
 
 Hex values are big-endian with an optional `0x` prefix.

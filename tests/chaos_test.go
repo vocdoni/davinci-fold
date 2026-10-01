@@ -610,7 +610,7 @@ func TestChaosRemoveFoldWorker(t *testing.T) {
 }
 
 // TestChaosScatter proves the batches of an election on three provers at
-// once, one batch per vote: the proves overlap, no prover ever runs two jobs
+// once, two votes per batch: the proves overlap, no prover ever runs two jobs
 // at a time, a prover that dies while it proves a batch has that batch
 // proved on another one while the others go on, and the batches are
 // imported and folded in seq order.
@@ -626,7 +626,7 @@ func TestChaosScatter(t *testing.T) {
 		p.SetDelay(20 * time.Millisecond)
 		p.Hold(helpers.JobBatch)
 	}
-	s.create(1)
+	s.create(2)
 
 	s.vote(0, len(s.ballots.votes))
 	s.waitFor("a prove running on every prover", func() bool {
@@ -649,7 +649,7 @@ func TestChaosScatter(t *testing.T) {
 
 	s.check(s.finish())
 	sealed := s.batches()
-	c.Assert(len(sealed), qt.Equals, len(s.ballots.votes))
+	c.Assert(len(sealed), qt.Equals, len(s.ballots.votes)/2)
 	c.Assert(s.election().FoldWorker, qt.Equals, a.URL)
 	for _, bi := range sealed {
 		c.Assert(bi.Worker == a.URL || bi.Worker == b.URL, qt.IsTrue, qt.Commentf("batch %d on %s", bi.Seq, bi.Worker))
@@ -684,7 +684,7 @@ func TestChaosRestartMidScatter(t *testing.T) {
 		p.SetDelay(20 * time.Millisecond)
 		p.Hold(helpers.JobBatch)
 	}
-	s.create(1)
+	s.create(2)
 
 	s.vote(0, len(s.ballots.votes))
 	s.setStatus(types.StatusEnded)
