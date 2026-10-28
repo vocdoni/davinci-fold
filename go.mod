@@ -8,7 +8,7 @@ require (
 	github.com/ethereum/go-ethereum v1.17.1
 	github.com/frankban/quicktest v1.14.6
 	github.com/fxamacker/cbor/v2 v2.9.0
-	github.com/go-chi/chi/v5 v5.2.3
+	github.com/go-chi/chi/v5 v5.4.0
 	github.com/go-chi/cors v1.2.1
 	github.com/golang-jwt/jwt/v4 v4.5.2
 	github.com/iden3/go-iden3-crypto v0.0.18-0.20241128121142-625bf563ffc5
